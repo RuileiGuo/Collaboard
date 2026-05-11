@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CollabBoard</title>
+    <link rel="stylesheet" href="/frontend/styles.css" />
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css"
+      crossorigin="anonymous"
+    />
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">CollabBoard</p>
+          <h1>Realtime whiteboard, protocol-first.</h1>
+          <p class="subcopy">协作绘画、文字与公式标注；清空画布需全员同意（clear_propose / clear_vote）。</p>
+        </div>
+        <div class="status-card">
+          <span id="connection-pill" class="pill">disconnected</span>
+          <div id="server-status" class="status-text">Server not connected.</div>
+        </div>
+      </section>
+
+      <section class="panel controls">
+        <div class="field">
+          <label for="server-url">Server URL</label>
+          <input id="server-url" value="ws://127.0.0.1:8000/ws" />
+        </div>
+        <div class="field">
+          <label for="connection-id">Connection ID</label>
+          <input id="connection-id" placeholder="conn-001" />
+        </div>
+        <div class="field">
+          <label for="room-id">Room ID</label>
+          <input id="room-id" placeholder="room-a" />
+        </div>
+        <div class="field">
+          <label for="user-id">User ID</label>
+          <input id="user-id" placeholder="alice" />
+        </div>
+        <div class="field">
+          <label for="user-name">User Name</label>
+          <input id="user-name" placeholder="Alice" />
+        </div>
+        <div class="actions">
+          <button id="join-btn">Join</button>
+          <button id="leave-btn" class="secondary">Leave</button>
+          <button id="sync-btn" class="secondary">Sync</button>
+        </div>
+      </section>
+
+      <section class="workspace">
+        <aside class="panel toolbar">
+          <div class="field">
+            <label>Tool</label>
+            <div class="segmented segmented-tools">
+              <button data-tool="pen" class="active">Pen</button>
+              <button data-tool="eraser">Eraser</button>
+              <button data-tool="text">Text</button>
+              <button data-tool="formula">Formula</button>
+            </div>
+          </div>
+          <div class="field">
+            <button type="button" id="clear-propose-btn" class="secondary wide-btn">申请清空画布</button>
+            <p class="field-hint">需房间内所有人同意；仅自己时会立即清空。Esc 同此操作。</p>
+          </div>
+          <div class="field">
+            <div class="undo-redo-row">
+              <button type="button" id="undo-btn" class="secondary wide-btn" disabled>撤销</button>
+              <button type="button" id="redo-btn" class="secondary wide-btn" disabled>恢复</button>
+            </div>
+            <p class="field-hint">撤销/恢复本人绘制与标注删除。Ctrl+Z / ⌘Z 撤销；Ctrl+Y、Ctrl+Shift+Z 或 ⌘⇧Z 恢复。</p>
+          </div>
+          <div class="field">
+            <label for="brush-size">Brush Size</label>
+            <input id="brush-size" type="range" min="1" max="24" value="4" />
+          </div>
+          <div class="field">
+            <label for="brush-color">Color</label>
+            <input id="brush-color" type="color" value="#111111" />
+          </div>
+          <div class="field">
+            <label>Room Members</label>
+            <div id="user-list" class="user-list"></div>
+          </div>
+          <div class="field">
+            <label>Events</label>
+            <div id="event-log" class="event-log"></div>
+          </div>
+        </aside>
+
+        <section class="panel board">
+          <div id="board-stack" class="board-stack">
+            <canvas id="board" width="1400" height="900"></canvas>
+            <div id="annotation-layer" class="annotation-layer"></div>
+          </div>
+          <div class="board-footer">
+            <span id="sequence-text">sequence: -1</span>
+            <span id="room-state-text">room state: idle</span>
+          </div>
+        </section>
+      </section>
+
+      <section class="panel error-box">
+        <label>Diagnostics</label>
+        <div id="error-text">Ready.</div>
+      </section>
+
+      <div id="clear-vote-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="clear-vote-summary">
+        <div class="modal-card">
+          <h3 class="modal-title">清空画布表决</h3>
+          <p id="clear-vote-summary"></p>
+          <div class="vote-actions">
+            <button type="button" id="clear-vote-approve">同意清空</button>
+            <button type="button" id="clear-vote-reject" class="secondary">拒绝</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="leave-report-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="leave-report-title">
+        <div class="modal-card leave-report-card">
+          <h3 id="leave-report-title" class="modal-title">本次房间小结</h3>
+          <div id="leave-report-body" class="leave-report-body"></div>
+          <button type="button" id="leave-report-close" class="secondary wide-btn">关闭</button>
+        </div>
+      </div>
+    </main>
+
+    <script type="module" src="/frontend/app.js"></script>
+  </body>
+</html>
