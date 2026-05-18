@@ -831,6 +831,8 @@ CollabBoard 采用 **WebSocket + 事件驱动** 架构，所有用户操作转�
 
 ---
 
+> **完整安全规范（含威胁矩阵、实现状态、Security Envelope 与部署建议）见仓库根目录 [`SECURITY.md`](SECURITY.md)。**
+
 ## 9. 安全约束
 
 ### 9.1 消息验证

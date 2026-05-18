@@ -112,6 +112,7 @@ CollabBoard 是一套面向多终端的实时协作白板系统。客户端通�
 | `backend/run.bat` | Windows 下启动脚本（默认 `0.0.0.0:8000`） |
 | `frontend/` | 协议封装、画布与标注、会话 UI |
 | `docs/BACKEND_QUICKSTART.md` | 依赖安装、启动与测试命令 |
+| `SECURITY.md` | 安全规范（威胁模型、控制措施、实现状态对照） |
 | `00_RESEARCH_PLAN_SUMMARY.md` | 研究计划与设计决策总览 |
 | `01_PROTOCOL_SPECIFICATION.md` | 协议规范全文 |
 | `02_STATE_MACHINE_DESIGN.md` | 状态机设计全文 |
@@ -318,13 +319,14 @@ backend\run.bat
 
 ## 参考文献与延伸阅读（仓库内）
 
-1. `00_RESEARCH_PLAN_SUMMARY.md` — 设计目标、原则与交互序列总览  
-2. `01_PROTOCOL_SPECIFICATION.md` — 消息与事件规范  
-3. `02_STATE_MACHINE_DESIGN.md` — 用户与房间状态机  
-4. `03_ARCHITECTURE_DESIGN.md` — 模块划分与数据流  
-5. `04_IMPLEMENTATION_PLAN.md` — 分阶段计划与检查清单  
-6. `README_QUICK_REFERENCE.md` — 实现期速查  
-7. `docs/BACKEND_QUICKSTART.md` — 运行与测试说明  
-8. `frontend/README.md` — 前端模块与启动方式  
+1. `SECURITY.md` — 安全规范、威胁矩阵与 Security Envelope  
+2. `00_RESEARCH_PLAN_SUMMARY.md` — 设计目标、原则与交互序列总览  
+3. `01_PROTOCOL_SPECIFICATION.md` — 消息与事件规范  
+4. `02_STATE_MACHINE_DESIGN.md` — 用户与房间状态机  
+5. `03_ARCHITECTURE_DESIGN.md` — 模块划分与数据流  
+6. `04_IMPLEMENTATION_PLAN.md` — 分阶段计划与检查清单  
+7. `README_QUICK_REFERENCE.md` — 实现期速查  
+8. `docs/BACKEND_QUICKSTART.md` — 运行与测试说明  
+9. `frontend/README.md` — 前端模块与启动方式  
 
 外部标准：WebSocket（RFC 6455）、JSON Schema（https://json-schema.org/）、FastAPI 官方文档。
