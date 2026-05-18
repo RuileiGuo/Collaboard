@@ -263,6 +263,34 @@ class RoomManager:
             return None
         return last_fields
 
+    @staticmethod
+    def normalize_display_name(user_name: str) -> str:
+        return str(user_name or "").strip().casefold()
+
+    async def find_user_id_by_display_name(
+        self,
+        room_id: str,
+        user_name: str,
+        *,
+        exclude_user_id: Optional[str] = None,
+    ) -> Optional[str]:
+        """Return user_id of a member whose display name matches (case-insensitive), if any."""
+        room = await self.get(room_id)
+        if room is None:
+            return None
+        target = self.normalize_display_name(user_name)
+        if not target:
+            return None
+        async with room.lock:
+            for uid in room.users:
+                if exclude_user_id is not None and uid == exclude_user_id:
+                    continue
+                meta = room.user_metadata.get(uid, {})
+                display = str(meta.get("user_name", uid))
+                if self.normalize_display_name(display) == target:
+                    return uid
+        return None
+
     async def get_user_display_name(self, room_id: str, user_id: str) -> str:
         """Resolved display name from join metadata (for broadcast payloads)."""
         room = await self.get(room_id)

@@ -1,7 +1,9 @@
 /**
- * Overlays text / KaTeX formula annotations (canvas coordinates, CSS px).
+ * Overlays text / KaTeX formula annotations (virtual board coordinates).
  * Server enforces content limits and XSS-oriented substring bans; UI still uses textContent / KaTeX only.
  */
+
+import { clamp01, pointToNormalized } from "./board-coords.js";
 
 export class AnnotationLayer {
   constructor(containerEl) {
@@ -46,9 +48,12 @@ export class AnnotationLayer {
       div.title = "Click to request deletion from the author";
     }
 
-    div.style.left = `${Number(payload.x)}px`;
-    div.style.top = `${Number(payload.y)}px`;
-    div.style.fontSize = `${Number(payload.font_size)}px`;
+    const norm = pointToNormalized(payload);
+    const vfs = Number(payload.font_size);
+    div.dataset.normX = String(norm.x);
+    div.dataset.normY = String(norm.y);
+    div.dataset.fontSize = String(vfs);
+    this._applyLayout(div, norm.x, norm.y, vfs);
     div.style.color = payload.color || "#111111";
     const mode = payload.mode || "text";
     const content = String(payload.content ?? "");
@@ -63,5 +68,33 @@ export class AnnotationLayer {
     }
     this.container.appendChild(div);
     this.byId.set(id, div);
+  }
+
+  _applyLayout(el, normX, normY, fontSize) {
+    const rect = this.container.getBoundingClientRect();
+    const h = rect.height > 0 ? rect.height : 1;
+    el.style.left = `${clamp01(normX) * 100}%`;
+    el.style.top = `${clamp01(normY) * 100}%`;
+    const fs = Number(fontSize);
+    if (Number.isFinite(fs)) {
+      if (fs > 0 && fs <= 1) {
+        el.style.fontSize = `${fs * h}px`;
+      } else {
+        el.style.fontSize = `${Math.min(72, Math.max(8, (fs / 900) * h))}px`;
+      }
+    }
+  }
+
+  /** Re-position all annotations after board resize (normalized 0–1 coords). */
+  relayout() {
+    for (const el of this.byId.values()) {
+      const nx = Number(el.dataset.normX ?? el.dataset.virtualX);
+      const ny = Number(el.dataset.normY ?? el.dataset.virtualY);
+      const vfs = Number(el.dataset.fontSize ?? el.dataset.virtualFontSize);
+      if (Number.isFinite(nx) && Number.isFinite(ny)) {
+        const norm = pointToNormalized({ x: nx, y: ny });
+        this._applyLayout(el, norm.x, norm.y, vfs);
+      }
+    }
   }
 }

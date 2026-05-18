@@ -143,6 +143,8 @@ class MessageRouter:
         "draw",
         "annotation",
         "annotation_delete",
+        "annotation_delete_request",
+        "annotation_delete_vote",
         "annotation_restore",
         "draw_undo",
         "draw_redo",

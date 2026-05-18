@@ -1,5 +1,6 @@
 import { AnnotationLayer } from "./annotation-layer.js";
 import { CanvasBoard } from "./canvas.js";
+import { normalizeStrokePoints, screenToNormalized } from "./board-coords.js";
 import { AppState } from "./state.js";
 import {
   buildAnnotation,
@@ -72,9 +73,40 @@ function queryDomElements() {
 let drawing = false;
 let currentStroke = null;
 let reconnectTimer = null;
+let sessionHeartbeatTimer = null;
 let pendingReconnect = false;
+const SESSION_HEARTBEAT_MS = 60_000;
 /** @type {{ statsSnapshot: object, durationMs: number, roomLabel: string } | null} */
 let pendingLeaveReport = null;
+
+function formatUserAlreadyJoinedError(message) {
+  const details = message?.payload?.details || {};
+  const uid = details.user_id || state.userId || "";
+  const room = details.room_id || state.roomId || "";
+  const name = details.user_name || state.userName || "";
+  if (details.reason === "duplicate_user_name_in_room") {
+    return `User Name「${name}」已在房间「${room}」中被占用。请换一个显示名（如 PC / iPad），或让对方先 Leave。`;
+  }
+  if (details.reason === "duplicate_user_id_in_room") {
+    return `User ID「${uid}」已在房间「${room}」中被另一连接占用。请换用不同的 User ID（如 user-ipad / user-pc），或让对方先 Leave。`;
+  }
+  if (details.room_id && details.room_id !== state.roomId) {
+    return `User ID「${uid}」已在房间「${details.room_id}」中。请先 Leave 该房间，或换一个 User ID 再加入当前房间。`;
+  }
+  return "User ID 已被占用或该用户已在其他房间。每台设备请使用不同的 User ID（如 user-ipad、user-pc），Room ID 需完全一致。";
+}
+
+function focusJoinConflictField(errorMessage) {
+  const reason = errorMessage?.payload?.details?.reason;
+  const target =
+    reason === "duplicate_user_name_in_room"
+      ? els.userName
+      : reason === "duplicate_user_id_in_room"
+        ? els.userId
+        : els.userId;
+  target?.focus();
+  target?.select();
+}
 
 function defaultServerUrl() {
   const { protocol, host } = window.location;
@@ -152,6 +184,177 @@ function setError(text) {
   }
 }
 
+function showModal(el) {
+  if (!el) {
+    return;
+  }
+  el.hidden = false;
+  el.classList.remove("hidden");
+  el.setAttribute("aria-hidden", "false");
+}
+
+function hideModal(el) {
+  if (!el) {
+    return;
+  }
+  el.hidden = true;
+  el.classList.add("hidden");
+  el.setAttribute("aria-hidden", "true");
+}
+
+function closeAllModals() {
+  document.querySelectorAll(".modal").forEach((el) => hideModal(el));
+  state.pendingClearProposal = null;
+  state.pendingAnnotationDeleteRequest = null;
+  state.pendingOutgoingAnnotationDeleteRequest = null;
+}
+
+function setJoinedRoomDiagnostics() {
+  if (!state.joined) {
+    return;
+  }
+  const names = (state.activeUsers || []).map((u) => u.user_name || u.user_id).join(", ");
+  setError(`已加入房间「${state.roomId}」，当前成员 ${state.activeUsers.length} 人：${names || "仅自己"}`);
+}
+
+/** Replay user_joined / user_left from canvas history (join snapshot may omit peers if events were missed live). */
+function rebuildActiveUsersFromHistory(events, baseUsers) {
+  const byId = new Map();
+  for (const u of baseUsers || []) {
+    if (u?.user_id) {
+      byId.set(u.user_id, {
+        user_id: u.user_id,
+        user_name: u.user_name || u.user_id,
+      });
+    }
+  }
+  for (const ev of events || []) {
+    const p = ev?.payload || {};
+    const uid = p.user_id;
+    if (!uid) {
+      continue;
+    }
+    if (p.event_type === "user_joined") {
+      byId.set(uid, { user_id: uid, user_name: p.user_name || uid });
+    } else if (p.event_type === "user_left") {
+      byId.delete(uid);
+    }
+  }
+  return Array.from(byId.values()).sort((a, b) => a.user_id.localeCompare(b.user_id));
+}
+
+function applyMembershipEvent(payload, eventType) {
+  const uid = payload.user_id;
+  if (!uid) {
+    return;
+  }
+  if (eventType === "user_joined") {
+    state.activeUsers = [
+      ...state.activeUsers.filter((u) => u.user_id !== uid),
+      { user_id: uid, user_name: payload.user_name || uid },
+    ];
+  } else if (eventType === "user_left") {
+    state.activeUsers = state.activeUsers.filter((u) => u.user_id !== uid);
+  }
+}
+
+function ensureSelfInActiveUsers() {
+  if (!state.joined || !state.userId) {
+    return;
+  }
+  if (!state.activeUsers.some((u) => u.user_id === state.userId)) {
+    state.activeUsers = [
+      ...state.activeUsers,
+      { user_id: state.userId, user_name: state.userName || state.userId },
+    ];
+  }
+}
+
+function expectedRoomUserCount(payload, eventType) {
+  if (eventType === "user_joined" && Number.isFinite(payload.room_user_count)) {
+    return payload.room_user_count;
+  }
+  if (eventType === "user_left" && Number.isFinite(payload.remaining_users)) {
+    return payload.remaining_users;
+  }
+  return null;
+}
+
+function refreshActiveUsersUi() {
+  ensureSelfInActiveUsers();
+  renderUsers(state.activeUsers);
+  if (!state.pendingOutgoingAnnotationDeleteRequest) {
+    setJoinedRoomDiagnostics();
+  }
+}
+
+function maybeResyncActiveUsers(expectedCount) {
+  if (!state.joined || !Number.isFinite(expectedCount)) {
+    return false;
+  }
+  ensureSelfInActiveUsers();
+  if (state.activeUsers.length === expectedCount) {
+    return false;
+  }
+  if (state.connected && state.socket?.readyState === WebSocket.OPEN) {
+    syncRoom();
+    return true;
+  }
+  return false;
+}
+
+/** If we see activity from another user but missed user_joined, add them to the member list. */
+function ensurePeerInActiveUsers(message, payload) {
+  const peerId = message.user_id || payload.user_id;
+  if (!peerId || peerId === "server" || peerId === state.userId) {
+    return;
+  }
+  if (state.activeUsers.some((u) => u.user_id === peerId)) {
+    return;
+  }
+  applyMembershipEvent(
+    { user_id: peerId, user_name: payload.user_name || peerId },
+    "user_joined",
+  );
+  refreshActiveUsersUi();
+}
+
+function clearPendingOutgoingAnnotationDeleteRequest(resolvedMessage) {
+  if (!state.pendingOutgoingAnnotationDeleteRequest) {
+    return;
+  }
+  state.pendingOutgoingAnnotationDeleteRequest = null;
+  if (resolvedMessage) {
+    setError(resolvedMessage);
+  } else {
+    setJoinedRoomDiagnostics();
+  }
+}
+
+function unlockIdentityFields() {
+  for (const key of ["serverUrl", "connectionId", "roomId", "userId", "userName"]) {
+    const el = els[key];
+    if (!el) {
+      continue;
+    }
+    el.disabled = false;
+    el.readOnly = false;
+    el.removeAttribute("aria-disabled");
+    el.style.pointerEvents = "";
+  }
+}
+
+function setIdentityFieldsLocked(locked) {
+  for (const key of ["serverUrl", "connectionId", "roomId", "userId", "userName"]) {
+    const el = els[key];
+    if (!el) {
+      continue;
+    }
+    el.readOnly = locked;
+    el.tabIndex = locked ? -1 : 0;
+  }
+}
+
 function addEvent(text) {
   const row = document.createElement("div");
   row.textContent = text;
@@ -220,7 +423,10 @@ function resyncAnnotationsFromHistory(events) {
     const p = ev?.payload || {};
     if (p.event_type === "annotation") {
       const author = ev.user_id || p.user_id || "";
-      annotations?.addFromPayload(p, author === state.userId ? state.userId : "");
+      annotations?.addFromPayload(
+        { ...p, user_id: p.user_id || ev.user_id || "" },
+        state.userId,
+      );
     } else if (p.event_type === "annotation_removed") {
       annotations?.removeById(p.annotation_id);
     }
@@ -233,11 +439,11 @@ function openClearVoteModal() {
     return;
   }
   els.clearVoteSummary.textContent = `${p.proposer_name} 请求清空画布。截止时间：${new Date(p.expires_ms).toLocaleString()}。`;
-  els.clearVoteModal.classList.remove("hidden");
+  showModal(els.clearVoteModal);
 }
 
 function closeClearVoteModal() {
-  els.clearVoteModal.classList.add("hidden");
+  hideModal(els.clearVoteModal);
   state.pendingClearProposal = null;
 }
 
@@ -247,12 +453,12 @@ function openAnnotationDeleteModal() {
     return;
   }
   const extra = req.message ? ` Note: ${req.message}` : "";
-  els.annotationDeleteSummary.textContent = `${req.requester_name} wants to delete your annotation. Expires at ${new Date(req.expires_ms).toLocaleString()}.${extra}`;
-  els.annotationDeleteModal.classList.remove("hidden");
+  els.annotationDeleteSummary.textContent = `${req.requester_name} 请求删除你的标注。截止时间：${new Date(req.expires_ms).toLocaleString()}。${extra ? ` 说明：${extra}` : ""}`;
+  showModal(els.annotationDeleteModal);
 }
 
 function closeAnnotationDeleteModal() {
-  els.annotationDeleteModal?.classList.add("hidden");
+  hideModal(els.annotationDeleteModal);
   state.pendingAnnotationDeleteRequest = null;
 }
 
@@ -345,11 +551,11 @@ function showLeaveReportModal(stats, durationMs, roomLabel) {
       return p;
     }),
   );
-  els.leaveReportModal.classList.remove("hidden");
+  showModal(els.leaveReportModal);
 }
 
 function closeLeaveReportModal() {
-  els.leaveReportModal?.classList.add("hidden");
+  hideModal(els.leaveReportModal);
 }
 
 function resetRoomView({ clearRoomIdentity = false } = {}) {
@@ -357,6 +563,7 @@ function resetRoomView({ clearRoomIdentity = false } = {}) {
   currentStroke = null;
   closeClearVoteModal();
   closeAnnotationDeleteModal();
+  state.pendingOutgoingAnnotationDeleteRequest = null;
   if (board) {
     board.strokes = [];
     board.clear();
@@ -382,11 +589,13 @@ function resetRoomView({ clearRoomIdentity = false } = {}) {
   updateRoomMeta();
 }
 
-function resetSessionOnJoinFailure(code) {
+function resetSessionOnJoinFailure(code, errorMessage) {
   pendingReconnect = false;
   disconnect(false);
   state.sessionPhase = "idle";
   state.joined = false;
+  unlockIdentityFields();
+  setIdentityFieldsLocked(false);
   refreshJoinedControls();
   setStatus("Disconnected.", "");
   if (code === "CONNECTION_ALREADY_EXISTS") {
@@ -396,21 +605,44 @@ function resetSessionOnJoinFailure(code) {
     return;
   }
   if (code === "USER_ALREADY_JOINED") {
-    setError(
-      "User ID 已被占用或该用户已在其他房间。每台设备请使用不同的 User ID（如 user-ipad、user-pc），Room ID 需完全一致。",
-    );
-    els.userId?.focus();
-    els.userId?.select();
+    setError(formatUserAlreadyJoinedError(errorMessage));
+    focusJoinConflictField(errorMessage);
   }
+}
+
+function stopSessionHeartbeat() {
+  if (sessionHeartbeatTimer) {
+    clearInterval(sessionHeartbeatTimer);
+    sessionHeartbeatTimer = null;
+  }
+}
+
+function startSessionHeartbeat() {
+  stopSessionHeartbeat();
+  if (!state.joined) {
+    return;
+  }
+  sessionHeartbeatTimer = setInterval(() => {
+    if (!state.joined || !state.socket || state.socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    try {
+      send(buildStateSync(state));
+    } catch {
+      // ignore heartbeat errors; next user action or reconnect will recover
+    }
+  }, SESSION_HEARTBEAT_MS);
 }
 
 function markJoinSucceeded() {
   state.sessionPhase = "joined";
   state.joined = true;
+  setIdentityFieldsLocked(true);
   refreshJoinedControls();
   setStatus(`Joined room ${state.roomId}`, "connected");
-  const names = (state.activeUsers || []).map((u) => u.user_name || u.user_id).join(", ");
-  setError(`已加入房间「${state.roomId}」，当前成员 ${state.activeUsers.length} 人：${names || "仅自己"}`);
+  state.pendingOutgoingAnnotationDeleteRequest = null;
+  setJoinedRoomDiagnostics();
+  startSessionHeartbeat();
 }
 
 function finalizeLeave() {
@@ -422,6 +654,8 @@ function finalizeLeave() {
   disconnect(false);
   state.sessionPhase = "idle";
   state.joined = false;
+  unlockIdentityFields();
+  setIdentityFieldsLocked(false);
   resetRoomView({ clearRoomIdentity: true });
   setStatus("Disconnected.", "");
   refreshJoinedControls();
@@ -576,6 +810,7 @@ function connect() {
 }
 
 function disconnect(manual = true) {
+  stopSessionHeartbeat();
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
@@ -668,8 +903,12 @@ function handleMessage(message) {
     addEvent(`error ${code}`.trim());
     if (code === "USER_ALREADY_JOINED" || code === "CONNECTION_ALREADY_EXISTS") {
       if (state.sessionPhase === "connecting") {
-        resetSessionOnJoinFailure(code);
+        resetSessionOnJoinFailure(code, message);
         return;
+      }
+      if (code === "USER_ALREADY_JOINED") {
+        setError(formatUserAlreadyJoinedError(message));
+        focusJoinConflictField(message);
       }
     }
     if (code === "ROOM_NOT_FOUND") {
@@ -682,6 +921,14 @@ function handleMessage(message) {
     }
     if (code === "CLEAR_PROPOSAL_ACTIVE") {
       setError("已有进行中的清空表决，请等待结束后再申请。");
+    }
+    if (code === "UNAUTHORIZED" && state.joined && state.socket?.readyState === WebSocket.OPEN) {
+      try {
+        send(buildStateSync(state));
+        setError("会话状态已过期，正在自动恢复… 若仍无法操作，请 Leave 后重新 Join。");
+      } catch (syncError) {
+        setError(`会话已失效（${String(syncError.message || syncError)}）。请 Leave 后重新 Join。`);
+      }
     }
     const rollbackCanvas = ["INVALID_MESSAGE", "UNAUTHORIZED", "RATE_LIMIT"].includes(code);
     if (rollbackCanvas && state.optimisticStrokeIds.size) {
@@ -715,12 +962,13 @@ function handleMessage(message) {
         state.pendingUndoEntry = null;
         state.pendingRedoEntry = null;
         state.lastReceivedSequence = roomState.current_sequence ?? state.lastReceivedSequence;
-        state.activeUsers = roomState.active_users || [];
-        renderUsers(state.activeUsers);
         const history = roomState.canvas_history ?? roomState.canvas_events ?? [];
+        state.activeUsers = rebuildActiveUsersFromHistory(history, roomState.active_users || []);
+        renderUsers(state.activeUsers);
         try {
           board?.syncFromEvents(history);
           resyncAnnotationsFromHistory(history);
+          annotations?.relayout();
         } catch (syncError) {
           setError(`已加入房间，但同步画布失败：${String(syncError.message || syncError)}`);
         }
@@ -728,8 +976,14 @@ function handleMessage(message) {
       } else {
         state.sessionStats.stateSyncs += 1;
         state.activeUsers = roomState.active_users || state.activeUsers;
-        renderUsers(state.activeUsers);
         const deltas = roomState.canvas_events || [];
+        for (const ev of deltas) {
+          const p = ev?.payload || {};
+          if (p.event_type === "user_joined" || p.event_type === "user_left") {
+            applyMembershipEvent(p, p.event_type);
+          }
+        }
+        refreshActiveUsersUi();
         for (const ev of deltas) {
           enqueueBroadcast(ev);
         }
@@ -741,7 +995,13 @@ function handleMessage(message) {
     } else if (message.payload?.status === "ok" && !message.payload?.room_state) {
       const op = message.payload?.op;
       const p = message.payload;
-      if (op === "draw" && p.stroke_id) {
+      if (op === "annotation_delete_request" && p.annotation_id && p.request_id) {
+        state.pendingOutgoingAnnotationDeleteRequest = {
+          annotation_id: p.annotation_id,
+          request_id: p.request_id,
+        };
+        setError("已向对方发送删除请求，等待对方在弹窗中同意。");
+      } else if (op === "draw" && p.stroke_id) {
         state.redoStack = [];
         state.undoStack.push({ kind: "draw", strokeId: p.stroke_id });
       } else if (op === "annotation") {
@@ -816,11 +1076,18 @@ function applyBroadcast(message) {
   const payload = message.payload || {};
   const eventType = payload.event_type;
   if (eventType === "annotation") {
-    annotations.addFromPayload(payload, state.userId);
+    ensurePeerInActiveUsers(message, payload);
+    annotations.addFromPayload(
+      { ...payload, user_id: payload.user_id || message.user_id || "" },
+      state.userId,
+    );
   } else if (eventType === "annotation_removed") {
     annotations.removeById(payload.annotation_id);
     if (state.pendingAnnotationDeleteRequest?.annotation_id === payload.annotation_id) {
       closeAnnotationDeleteModal();
+    }
+    if (state.pendingOutgoingAnnotationDeleteRequest?.annotation_id === payload.annotation_id) {
+      clearPendingOutgoingAnnotationDeleteRequest("对方已同意删除，标注已移除。");
     }
   } else if (eventType === "annotation_delete_requested") {
     if (payload.target_author_id === state.userId) {
@@ -839,7 +1106,13 @@ function applyBroadcast(message) {
     if (state.pendingAnnotationDeleteRequest?.request_id === payload.request_id) {
       closeAnnotationDeleteModal();
     }
+    if (payload.requester_id === state.userId) {
+      state.pendingOutgoingAnnotationDeleteRequest = null;
+      const who = payload.rejector_name || payload.rejector_id || "作者";
+      setError(`${who} 拒绝了删除标注的请求。`);
+    }
   } else if (eventType === "draw") {
+    ensurePeerInActiveUsers(message, payload);
     const strokeId = payload.stroke_id;
     if (strokeId && state.optimisticStrokeIds.has(strokeId)) {
       state.optimisticStrokeIds.delete(strokeId);
@@ -882,17 +1155,12 @@ function applyBroadcast(message) {
   ) {
     closeClearVoteModal();
   } else if (eventType === "user_joined" || eventType === "user_left") {
-    if (payload.user_id && eventType === "user_joined") {
-      state.activeUsers = [
-        ...state.activeUsers.filter((u) => u.user_id !== payload.user_id),
-        { user_id: payload.user_id, user_name: payload.user_name || payload.user_id },
-      ];
-    }
-    if (payload.user_id && eventType === "user_left") {
-      state.activeUsers = state.activeUsers.filter((u) => u.user_id !== payload.user_id);
-    }
-    renderUsers(state.activeUsers);
+    applyMembershipEvent(payload, eventType);
     state.roomState = state.activeUsers.length === 0 ? "idle" : "active";
+    const expected = expectedRoomUserCount(payload, eventType);
+    if (!maybeResyncActiveUsers(expected)) {
+      refreshActiveUsersUi();
+    }
   } else if (eventType === "room_idle") {
     state.roomState = "idle";
   }
@@ -975,8 +1243,15 @@ function syncRoom() {
   send(buildStateSync(state));
 }
 
+function boardScreenRect() {
+  const el = els.boardStack || els.board;
+  const rect = el?.getBoundingClientRect() ?? { left: 0, top: 0, width: 1, height: 1 };
+  return rect;
+}
+
+/** Pointer position as normalized 0–1 coords (same relative position on all devices). */
 function pointerPos(event) {
-  const rect = els.board.getBoundingClientRect();
+  const rect = boardScreenRect();
   const touch = event.touches?.[0] || event.changedTouches?.[0] || null;
   const clientX = touch ? touch.clientX : event.clientX;
   const clientY = touch ? touch.clientY : event.clientY;
@@ -990,9 +1265,12 @@ function pointerPos(event) {
   if (p > 1) {
     p = 1;
   }
+  const screenX = clientX - rect.left;
+  const screenY = clientY - rect.top;
+  const norm = screenToNormalized(screenX, screenY, rect);
   return {
-    x: clientX - rect.left,
-    y: clientY - rect.top,
+    x: norm.x,
+    y: norm.y,
     pressure: p,
   };
 }
@@ -1028,8 +1306,9 @@ function moveStroke(event) {
     return;
   }
   const point = pointerPos(event);
+  const prev = currentStroke.points[currentStroke.points.length - 1];
   currentStroke.points.push(point);
-  board.drawStroke(currentStroke);
+  board.drawSegment(prev, point, currentStroke);
 }
 
 function endStroke(event) {
@@ -1037,7 +1316,7 @@ function endStroke(event) {
     return;
   }
   drawing = false;
-  const finalStroke = currentStroke;
+  const finalStroke = normalizeStrokePoints(currentStroke);
   currentStroke = null;
   state.optimisticStrokeIds.add(finalStroke.stroke_id);
   try {
@@ -1048,6 +1327,47 @@ function endStroke(event) {
   }
   if (typeof event.pointerId === "number") {
     els.board.releasePointerCapture?.(event.pointerId);
+  }
+}
+
+function handleAnnotationLayerClick(event) {
+  if (!state.joined || !annotations) {
+    return;
+  }
+  const mine = event.target?.closest?.(".board-annotation--mine");
+  const remote = event.target?.closest?.(".board-annotation--remote");
+  const target = mine || remote;
+  if (!target) {
+    return;
+  }
+  event.stopPropagation();
+  event.preventDefault();
+  const id = target.dataset.annotationId;
+  if (!id) {
+    return;
+  }
+  if (mine) {
+    if (!window.confirm("删除此标注？")) {
+      return;
+    }
+    try {
+      send(buildAnnotationDelete(state, id));
+    } catch (error) {
+      setError(String(error.message || error));
+    }
+    return;
+  }
+  if (!window.confirm("向对方申请删除该标注？\n需标注作者同意后才会删除。")) {
+    return;
+  }
+  const note = window.prompt("可选说明（将展示给作者）：", "") ?? "";
+  if (note === null) {
+    return;
+  }
+  try {
+    send(buildAnnotationDeleteRequest(state, id, String(note).trim()));
+  } catch (error) {
+    setError(String(error.message || error));
   }
 }
 
@@ -1069,6 +1389,12 @@ function endStrokeFromTouch(event) {
 function toggleJoinAvailability(sessionPhase) {
   const isJoined = sessionPhase === "joined";
   const isBusy = sessionPhase === "connecting" || sessionPhase === "leaving";
+  if (sessionPhase === "idle") {
+    unlockIdentityFields();
+    setIdentityFieldsLocked(false);
+  } else if (isJoined) {
+    setIdentityFieldsLocked(true);
+  }
   if (els.joinBtn) {
     els.joinBtn.disabled = sessionPhase !== "idle";
     els.joinBtn.classList.toggle("btn-locked", sessionPhase !== "idle");
@@ -1172,7 +1498,10 @@ function bindUiEvents() {
       closeAnnotationDeleteModal();
     }
   });
-  window.addEventListener("resize", () => board?.resize());
+  window.addEventListener("resize", () => {
+    board?.resize();
+    annotations?.relayout();
+  });
   els.board?.addEventListener("pointerdown", beginStroke);
   els.board?.addEventListener("pointermove", moveStroke);
   els.board?.addEventListener("pointerup", endStroke);
@@ -1183,25 +1512,7 @@ function bindUiEvents() {
     els.board?.addEventListener("touchend", endStrokeFromTouch, { passive: false });
     els.board?.addEventListener("touchcancel", endStrokeFromTouch, { passive: false });
   }
-  els.annotationLayer?.addEventListener("click", (event) => {
-    const target = event.target?.closest?.(".board-annotation--mine");
-    if (!target || !state.joined) {
-      return;
-    }
-    event.stopPropagation();
-    const id = target.dataset.annotationId;
-    if (!id) {
-      return;
-    }
-    if (!window.confirm("删除此标注？")) {
-      return;
-    }
-    try {
-      send(buildAnnotationDelete(state, id));
-    } catch (error) {
-      setError(String(error.message || error));
-    }
-  });
+  els.annotationLayer?.addEventListener("click", handleAnnotationLayerClick);
   window.addEventListener("keydown", (event) => {
     const t = event.target;
     const tag = t?.tagName;
@@ -1227,11 +1538,24 @@ function bindUiEvents() {
       return;
     }
     if (event.key === "Escape") {
-      if (!els.clearVoteModal?.classList.contains("hidden")) {
+      if (inField) {
+        return;
+      }
+      if (els.clearVoteModal && !els.clearVoteModal.hidden) {
         closeClearVoteModal();
         return;
       }
-      proposeClearCanvas();
+      if (els.annotationDeleteModal && !els.annotationDeleteModal.hidden) {
+        closeAnnotationDeleteModal();
+        return;
+      }
+      if (els.leaveReportModal && !els.leaveReportModal.hidden) {
+        closeLeaveReportModal();
+        return;
+      }
+      if (state.joined) {
+        proposeClearCanvas();
+      }
     }
   });
 }
@@ -1240,7 +1564,10 @@ function startApp() {
   if (uiReady) {
     return;
   }
+  closeAllModals();
   queryDomElements();
+  unlockIdentityFields();
+  setIdentityFieldsLocked(false);
   if (!els.joinBtn || !els.board || !els.annotationLayer) {
     setError("页面控件未加载完整，请刷新页面（Ctrl+F5）。");
     setStatus("初始化失败", "error");
@@ -1249,6 +1576,8 @@ function startApp() {
   try {
     annotations = new AnnotationLayer(els.annotationLayer);
     board = new CanvasBoard(els.board);
+    board.resize();
+    annotations.relayout();
     bindUiEvents();
     if (els.serverUrl && !els.serverUrl.value.trim()) {
       els.serverUrl.value = formatServerUrlField(defaultServerUrl());

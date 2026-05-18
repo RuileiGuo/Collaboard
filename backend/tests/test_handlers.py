@@ -192,3 +192,56 @@ def test_room_event_rate_limit_via_router_after_join():
         assert draw_result.ack["payload"]["error_code"] == "RATE_LIMIT"
 
     asyncio.run(run())
+
+
+def test_annotation_delete_request_not_rejected_as_unknown_type():
+    """Regression: MessageRouter.CLIENT_TYPES must include annotation_delete_request."""
+
+    async def run() -> None:
+        backend_stack = create_backend_stack()
+        router = _build_router(backend_stack)
+        ws_alice = FakeWebSocket()
+        ws_bob = FakeWebSocket()
+        await backend_stack["connection_manager"].register("c-alice", ws_alice)
+        await backend_stack["connection_manager"].register("c-bob", ws_bob)
+        backend_stack["state_manager"].on_connected("alice", "c-alice")
+        backend_stack["state_manager"].on_connected("bob", "c-bob")
+
+        aid = "550e8400-e29b-41d4-a716-446655440001"
+        for conn, user in (("c-alice", "alice"), ("c-bob", "bob")):
+            join = build_message(
+                "join",
+                user,
+                "room-del-req",
+                {"client_version": "1.0.0", "metadata": {"user_name": user.title(), "client_type": "web"}},
+            )
+            assert (await router.handle_raw(json.dumps(join), connection_id=conn)).ack["type"] == "ack"
+
+        ann = build_message(
+            "annotation",
+            "alice",
+            "room-del-req",
+            {
+                "annotation_id": aid,
+                "mode": "text",
+                "content": "hello",
+                "x": 0.1,
+                "y": 0.2,
+                "font_size": 16,
+                "color": "#112233",
+            },
+        )
+        assert (await router.handle_raw(json.dumps(ann), connection_id="c-alice")).ack["type"] == "ack"
+
+        req = build_message(
+            "annotation_delete_request",
+            "bob",
+            "room-del-req",
+            {"annotation_id": aid, "message": "请删除"},
+        )
+        result = await router.handle_raw(json.dumps(req), connection_id="c-bob")
+        assert result.ack["type"] == "ack", result.ack
+        assert result.broadcasts
+        assert result.broadcasts[0].message["payload"]["event_type"] == "annotation_delete_requested"
+
+    asyncio.run(run())

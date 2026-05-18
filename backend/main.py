@@ -108,15 +108,41 @@ async def _cleanup_disconnected_user(app: FastAPI, user_id: str, room_id: str, r
         await connection_manager.broadcast(room_id, room_idle)
 
 
+async def _ensure_user_session_for_connection(
+    state_manager: StateManager,
+    connection_manager: ConnectionManager,
+    connection_id: str,
+) -> None:
+    """Restore ACTIVE session when WebSocket is still open but idle timeouts marked user DISCONNECTED."""
+    connection = await connection_manager.get_connection(connection_id)
+    if not connection or not connection.user_id or not connection.room_id:
+        return
+    user_id = connection.user_id
+    room_id = connection.room_id
+    try:
+        current = state_manager.get_user_state(user_id)
+    except Exception:
+        return
+    if current in (UserState.DISCONNECTED, UserState.TIMEOUT):
+        state_manager.restore_room_session(
+            user_id,
+            room_id,
+            connection_id=connection_id,
+        )
+
+
 async def _maintenance_loop(app: FastAPI) -> None:
     state_manager: StateManager = app.state.state_manager
     room_manager: RoomManager = app.state.room_manager
     connection_manager: ConnectionManager = app.state.connection_manager
 
     while True:
-        for event in state_manager.apply_timeouts():
-            if event.to_state == "disconnected" and event.connection_id:
-                await connection_manager.disconnect(event.connection_id, reason=event.reason)
+        online_users = await connection_manager.list_connected_user_ids()
+        for event in state_manager.apply_timeouts(online_user_ids=online_users):
+            if event.to_state == "disconnected":
+                entry = await connection_manager.get_connection_by_user(event.entity_id)
+                if entry is not None:
+                    await connection_manager.disconnect(entry.connection_id, reason=event.reason)
         await room_manager.expire_rooms()
         now_ms = int(time.time() * 1000)
         for rid, msg in await room_manager.sweep_expired_clear_proposals(now_ms, app.state.error_builder):
@@ -232,13 +258,38 @@ def create_app() -> FastAPI:
                     if isinstance(user_id, str):
                         connection = await connection_manager.get_connection(connection_id)
                         if connection and connection.user_id is None:
+                            preview_room = preview.get("room_id")
+                            duplicate = False
+                            duplicate_details: dict[str, object] = {"user_id": user_id}
+                            if isinstance(preview_room, str) and preview_room:
+                                in_room = await connection_manager.find_user_connection_in_room(
+                                    preview_room,
+                                    user_id,
+                                    exclude_connection_id=connection_id,
+                                )
+                                if in_room is not None:
+                                    duplicate = True
+                                    duplicate_details = {
+                                        "user_id": user_id,
+                                        "room_id": preview_room,
+                                        "reason": "duplicate_user_id_in_room",
+                                        "occupant_connection_id": in_room.connection_id,
+                                    }
                             existing = await connection_manager.get_connection_by_user(user_id)
                             if existing and existing.connection_id != connection_id:
+                                duplicate = True
+                                if "reason" not in duplicate_details:
+                                    duplicate_details["reason"] = "user_id_globally_bound"
+                            if duplicate:
                                 duplicate_user_ack = error_builder.build_error(
                                     ErrorCode.USER_ALREADY_JOINED,
-                                    message="User ID already in use",
-                                    request_msg_id=str(preview.get("msg_id")) if preview.get("msg_id") else None,
-                                    details={"user_id": user_id},
+                                    message="User ID already in use in this room"
+                                    if duplicate_details.get("reason") == "duplicate_user_id_in_room"
+                                    else "User ID already in use",
+                                    request_msg_id=str(preview.get("msg_id"))
+                                    if preview.get("msg_id")
+                                    else None,
+                                    details=duplicate_details,
                                 )
                                 await connection_manager.send(connection_id, duplicate_user_ack)
                                 reject_user_bind = True
@@ -248,6 +299,14 @@ def create_app() -> FastAPI:
 
                 if reject_user_bind:
                     break
+
+                online_users = await connection_manager.list_connected_user_ids()
+                state_manager.apply_timeouts(online_user_ids=online_users)
+                await _ensure_user_session_for_connection(
+                    state_manager,
+                    connection_manager,
+                    connection_id,
+                )
 
                 result = await router.handle_raw(raw_text, connection_id=connection_id)
                 await connection_manager.send(connection_id, result.ack)

@@ -43,10 +43,12 @@
         <div class="field">
           <label for="user-id">User ID</label>
           <input id="user-id" placeholder="alice" />
+          <p class="field-hint">同一房间内 User ID 不可重复；每台设备请使用不同 ID（如 user-pc、user-ipad）。</p>
         </div>
         <div class="field">
           <label for="user-name">User Name</label>
           <input id="user-name" placeholder="Alice" />
+          <p class="field-hint">同一房间内 User Name 也不可重复（不区分大小写）；建议每台设备用不同昵称。</p>
         </div>
         <div class="actions">
           <button type="button" id="join-btn">Join</button>
@@ -97,7 +99,7 @@
 
         <section class="panel board">
           <div id="board-stack" class="board-stack">
-            <canvas id="board" width="1400" height="900"></canvas>
+            <canvas id="board" width="1400" height="900" aria-label="Collaborative whiteboard"></canvas>
             <div id="annotation-layer" class="annotation-layer"></div>
           </div>
           <div class="board-footer">
@@ -112,7 +114,7 @@
         <div id="error-text">Ready.</div>
       </section>
 
-      <div id="clear-vote-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="clear-vote-summary">
+      <div id="clear-vote-modal" class="modal hidden" hidden aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="clear-vote-summary">
         <div class="modal-card">
           <h3 class="modal-title">清空画布表决</h3>
           <p id="clear-vote-summary"></p>
@@ -123,20 +125,20 @@
         </div>
       </div>
 
-      <div id="leave-report-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="leave-report-title">
+      <div id="leave-report-modal" class="modal hidden" hidden aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="leave-report-title">
         <div class="modal-card leave-report-card">
           <h3 id="leave-report-title" class="modal-title">本次房间小结</h3>
           <div id="leave-report-body" class="leave-report-body"></div>
           <button type="button" id="leave-report-close" class="secondary wide-btn">关闭</button>
         </div>
       </div>
-      <div id="annotation-delete-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="annotation-delete-summary">
+      <div id="annotation-delete-modal" class="modal hidden" hidden aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="annotation-delete-summary">
         <div class="modal-card">
-          <h3 class="modal-title">Annotation Delete Request</h3>
+          <h3 class="modal-title">标注删除请求</h3>
           <p id="annotation-delete-summary"></p>
           <div class="vote-actions">
-            <button type="button" id="annotation-delete-approve">Approve Delete</button>
-            <button type="button" id="annotation-delete-reject" class="secondary">Reject</button>
+            <button type="button" id="annotation-delete-approve">同意删除</button>
+            <button type="button" id="annotation-delete-reject" class="secondary">拒绝</button>
           </div>
         </div>
       </div>
@@ -184,6 +186,15 @@
             err.textContent = "脚本异常：" + String(event.reason || "unknown");
           }
         });
+        function closeAllModalsEarly() {
+          document.querySelectorAll(".modal").forEach(function (el) {
+            el.classList.add("hidden");
+            el.hidden = true;
+            el.setAttribute("aria-hidden", "true");
+          });
+        }
+        closeAllModalsEarly();
+        window.addEventListener("pageshow", closeAllModalsEarly);
         if (location.protocol === "file:") {
           document.addEventListener("DOMContentLoaded", function () {
             var status = document.getElementById("server-status");

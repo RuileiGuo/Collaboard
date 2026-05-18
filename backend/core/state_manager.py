@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from enum import Enum
 import threading
 import time
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import AbstractSet, Any, Dict, Iterable, List, Optional, Set, Tuple
 
 
 # --- Best-effort imports (Core Contract is implemented by another worker) ---
@@ -334,6 +334,40 @@ class StateManager:
                 )
             ]
 
+    def restore_room_session(
+        self,
+        user_id: str,
+        room_id: str,
+        *,
+        connection_id: Optional[str] = None,
+        now: Optional[float] = None,
+    ) -> List[TransitionEvent]:
+        """
+        Re-activate a session when the WebSocket is still open but state timed out to DISCONNECTED.
+        Does not re-enter the room in RoomManager (caller must ensure membership is still valid).
+        """
+        now_s = _now_s(now)
+        with self._lock:
+            sess = self.get_or_create_user(user_id)
+            prev = sess.state
+            sess.state = UserState.ACTIVE
+            sess.room_id = room_id
+            sess.connection_id = connection_id
+            sess.last_activity_at = now_s
+            sess.idle_since = None
+            sess.left_at = None
+            if prev != sess.state:
+                return [
+                    TransitionEvent(
+                        entity="user",
+                        entity_id=user_id,
+                        from_state=str(prev),
+                        to_state=str(sess.state),
+                        reason="session_restored",
+                    )
+                ]
+            return []
+
     def on_timeout(self, user_id: str, now: Optional[float] = None) -> List[TransitionEvent]:
         """
         TIMEOUT is modeled as an intermediate state, but per design it transitions to DISCONNECTED immediately.
@@ -377,6 +411,11 @@ class StateManager:
 
             if st == UserState.CONNECTED:
                 return mt in (str(getattr(MessageType, "JOIN", "join")), "join")
+            if st in (UserState.DISCONNECTED, UserState.TIMEOUT):
+                return mt in (
+                    str(getattr(MessageType, "LEAVE", "leave")),
+                    "leave",
+                )
             if st in (UserState.JOINED, UserState.ACTIVE, UserState.IDLE):
                 allowed = {
                     str(getattr(MessageType, "DRAW", "draw")),
@@ -411,17 +450,46 @@ class StateManager:
             return False
 
     # --- Timeout polling ---
-    def apply_timeouts(self, now: Optional[float] = None) -> List[TransitionEvent]:
+    def apply_timeouts(
+        self,
+        now: Optional[float] = None,
+        *,
+        online_user_ids: Optional[AbstractSet[str]] = None,
+    ) -> List[TransitionEvent]:
         """
         Apply all due automatic transitions based on deadlines and return transition events.
 
         Higher layers can decide what to do with these events (e.g. instruct ConnectionManager to disconnect).
+
+        When online_user_ids is provided, users with an open WebSocket are not demoted to IDLE/DISCONNECTED
+        for in-room idle (they may still time out if CONNECTED without ever JOIN).
         """
         now_s = _now_s(now)
+        online: Set[str] = set(online_user_ids) if online_user_ids is not None else set()
         events: List[TransitionEvent] = []
         with self._lock:
             for user_id, sess in list(self._users.items()):
                 st = sess.state
+
+                if user_id in online and st == UserState.IDLE:
+                    prev = sess.state
+                    sess.state = UserState.ACTIVE
+                    sess.idle_since = None
+                    sess.last_activity_at = now_s
+                    if prev != sess.state:
+                        events.append(
+                            TransitionEvent(
+                                entity="user",
+                                entity_id=user_id,
+                                from_state=str(prev),
+                                to_state=str(sess.state),
+                                reason="presence_refresh",
+                            )
+                        )
+                    continue
+
+                if user_id in online and st in (UserState.JOINED, UserState.ACTIVE):
+                    continue
 
                 if st == UserState.CONNECTED and sess.connected_at is not None:
                     if now_s >= sess.connected_at + JOIN_GRACE_SECONDS:
@@ -459,6 +527,8 @@ class StateManager:
                     continue
 
                 if st == UserState.IDLE and sess.idle_since is not None:
+                    if user_id in online:
+                        continue
                     if now_s >= sess.idle_since + IDLE_TIMEOUT_SECONDS:
                         # TIMEOUT then immediate DISCONNECTED
                         prev = sess.state

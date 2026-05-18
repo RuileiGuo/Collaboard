@@ -18,6 +18,8 @@ export class AppState {
     this.pendingClearProposal = null;
     /** @type {{ request_id: string, annotation_id: string, requester_id: string, requester_name: string, target_author_id: string, expires_ms: number, message?: string } | null} */
     this.pendingAnnotationDeleteRequest = null;
+    /** @type {{ request_id: string, annotation_id: string } | null} 本人发起的删除申请（等待作者表决） */
+    this.pendingOutgoingAnnotationDeleteRequest = null;
     this.color = "#111111";
     this.brushSize = 4;
     this.pendingStrokes = new Map();

@@ -1,3 +1,11 @@
+import {
+  normalizeStrokePoints,
+  normalizedToScreen,
+  pointToNormalized,
+  strokePointsToScreen,
+  strokeWidthToScreen,
+} from "./board-coords.js";
+
 export class CanvasBoard {
   constructor(canvas) {
     this.canvas = canvas;
@@ -10,8 +18,17 @@ export class CanvasBoard {
     this.clear();
   }
 
+  getBoardRect() {
+    const stack = this.canvas.parentElement;
+    const rect = (stack || this.canvas).getBoundingClientRect();
+    return {
+      width: rect.width > 0 ? rect.width : 1,
+      height: rect.height > 0 ? rect.height : 1,
+    };
+  }
+
   resize() {
-    const rect = this.canvas.getBoundingClientRect();
+    const rect = this.getBoardRect();
     this.pixelRatio = window.devicePixelRatio || 1;
     this.cssWidth = rect.width;
     this.cssHeight = rect.height;
@@ -34,8 +51,9 @@ export class CanvasBoard {
   }
 
   addStroke(stroke) {
-    this.strokes.push(stroke);
-    this.drawStroke(stroke);
+    const normalized = normalizeStrokePoints(stroke);
+    this.strokes.push(normalized);
+    this.drawStroke(normalized);
   }
 
   removeStrokeById(strokeId) {
@@ -48,7 +66,27 @@ export class CanvasBoard {
 
   /** Record stroke for redraw without painting (optimistic pixels already on canvas). */
   recordStroke(stroke) {
-    this.strokes.push(stroke);
+    this.strokes.push(normalizeStrokePoints(stroke));
+  }
+
+  /** Draw one segment (normalized coords) without full redraw — for live preview. */
+  drawSegment(prevPoint, nextPoint, strokeStyle) {
+    const rect = this.getBoardRect();
+    const a = pointToNormalized(prevPoint);
+    const b = pointToNormalized(nextPoint);
+    const p0 = normalizedToScreen(a.x, a.y, rect);
+    const p1 = normalizedToScreen(b.x, b.y, rect);
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.lineWidth = strokeWidthToScreen(strokeStyle.width, rect);
+    ctx.strokeStyle = strokeStyle.tool === "eraser" ? "#ffffff" : strokeStyle.color || "#111111";
+    ctx.beginPath();
+    ctx.moveTo(p0.x, p0.y);
+    ctx.lineTo(p1.x, p1.y);
+    ctx.stroke();
+    ctx.restore();
   }
 
   drawStroke(stroke) {
@@ -56,15 +94,17 @@ export class CanvasBoard {
     if (!points.length) {
       return;
     }
+    const rect = this.getBoardRect();
+    const screenPoints = strokePointsToScreen(stroke, rect);
     const ctx = this.ctx;
     ctx.save();
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
-    ctx.lineWidth = stroke.width || 4;
+    ctx.lineWidth = strokeWidthToScreen(stroke.width, rect);
     ctx.strokeStyle = stroke.tool === "eraser" ? "#ffffff" : stroke.color || "#111111";
     ctx.beginPath();
-    ctx.moveTo(points[0].x, points[0].y);
-    for (const point of points.slice(1)) {
+    ctx.moveTo(screenPoints[0].x, screenPoints[0].y);
+    for (const point of screenPoints.slice(1)) {
       ctx.lineTo(point.x, point.y);
     }
     ctx.stroke();
@@ -93,7 +133,7 @@ export class CanvasBoard {
         if (!byId.has(sid)) {
           order.push(sid);
         }
-        byId.set(sid, payload);
+        byId.set(sid, normalizeStrokePoints(payload));
       } else if (type === "stroke_undone") {
         const sid = payload.stroke_id;
         byId.delete(sid);

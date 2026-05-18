@@ -110,9 +110,20 @@ h1 {
 
 .controls {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr)) auto;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
   gap: 14px;
   padding: 16px;
+  position: relative;
+  z-index: 30;
+}
+
+.controls input {
+  min-width: 0;
+  width: 100%;
+}
+
+.controls .actions {
+  grid-column: 1 / -1;
 }
 
 .field {
@@ -258,13 +269,18 @@ button.active,
 .board-stack {
   position: relative;
   width: 100%;
+  aspect-ratio: 14 / 9;
+  max-height: min(76vh, 920px);
   border-radius: 14px;
   overflow: hidden;
+  contain: layout paint;
 }
 
 canvas {
+  position: absolute;
+  inset: 0;
   width: 100%;
-  height: min(76vh, 920px);
+  height: 100%;
   display: block;
   border-radius: 14px;
   background: #ffffff;
@@ -274,10 +290,7 @@ canvas {
 
 .annotation-layer {
   position: absolute;
-  left: 0;
-  top: 0;
-  right: 0;
-  bottom: 0;
+  inset: 0;
   pointer-events: none;
   z-index: 2;
 }
@@ -325,8 +338,11 @@ canvas {
   cursor: text;
 }
 
-.hidden {
+.hidden,
+.modal[hidden] {
   display: none !important;
+  pointer-events: none !important;
+  visibility: hidden !important;
 }
 
 .modal {
@@ -338,6 +354,14 @@ canvas {
   background: rgba(5, 8, 18, 0.72);
   backdrop-filter: blur(8px);
   padding: 24px;
+  pointer-events: auto;
+}
+
+.hero,
+.controls,
+.error-box {
+  position: relative;
+  z-index: 20;
 }
 
 .modal-card {

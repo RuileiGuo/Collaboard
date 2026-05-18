@@ -78,6 +78,89 @@ def test_duplicate_user_id_indexed():
     asyncio.run(run())
 
 
+def test_duplicate_user_id_rejected_in_same_room():
+    async def run() -> None:
+        stack = create_backend_stack()
+        router = stack["router"]
+        cm = stack["connection_manager"]
+        sm = stack["state_manager"]
+
+        await cm.register("c1", FakeWebSocket())
+        sm.on_connected("alice", "c1")
+        join_a = build_message(
+            "join",
+            "alice",
+            "room-dup",
+            {"client_version": "1.0.0", "metadata": {"user_name": "Alice", "client_type": "web"}},
+        )
+        first = await router.handle_raw(json.dumps(join_a), connection_id="c1")
+        assert first.ack["type"] == "ack"
+
+        await cm.register("c2", FakeWebSocket())
+        sm.on_connected("alice", "c2")
+        join_b = build_message(
+            "join",
+            "alice",
+            "room-dup",
+            {"client_version": "1.0.0", "metadata": {"user_name": "Alice-2", "client_type": "web"}},
+        )
+        second = await router.handle_raw(json.dumps(join_b), connection_id="c2")
+        assert second.ack["type"] == "error"
+        assert second.ack["payload"]["error_code"] == "USER_ALREADY_JOINED"
+        assert second.ack["payload"]["details"]["reason"] == "duplicate_user_id_in_room"
+        assert await cm.find_user_connection_in_room("room-dup", "alice") is not None
+
+    asyncio.run(run())
+
+
+def test_duplicate_user_name_rejected_in_same_room():
+    async def run() -> None:
+        stack = create_backend_stack()
+        router = stack["router"]
+        cm = stack["connection_manager"]
+        sm = stack["state_manager"]
+
+        await cm.register("c1", FakeWebSocket())
+        sm.on_connected("alice", "c1")
+        first = await router.handle_raw(
+            json.dumps(
+                build_message(
+                    "join",
+                    "alice",
+                    "room-name-dup",
+                    {
+                        "client_version": "1.0.0",
+                        "metadata": {"user_name": "Display-A", "client_type": "web"},
+                    },
+                )
+            ),
+            connection_id="c1",
+        )
+        assert first.ack["type"] == "ack"
+
+        await cm.register("c2", FakeWebSocket())
+        sm.on_connected("bob", "c2")
+        second = await router.handle_raw(
+            json.dumps(
+                build_message(
+                    "join",
+                    "bob",
+                    "room-name-dup",
+                    {
+                        "client_version": "1.0.0",
+                        "metadata": {"user_name": "display-a", "client_type": "web"},
+                    },
+                )
+            ),
+            connection_id="c2",
+        )
+        assert second.ack["type"] == "error"
+        assert second.ack["payload"]["error_code"] == "USER_ALREADY_JOINED"
+        assert second.ack["payload"]["details"]["reason"] == "duplicate_user_name_in_room"
+
+    asyncio.run(run())
+
+
 def test_disconnect_cleanup_runs_on_leave_before_room_leave():
     async def run() -> None:
         stack = create_backend_stack()

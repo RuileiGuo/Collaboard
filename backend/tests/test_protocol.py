@@ -111,6 +111,30 @@ def test_annotation_delete_valid():
     validate_client_message(message)
 
 
+def test_annotation_delete_request_valid():
+    message = build_message(
+        "annotation_delete_request",
+        "alice",
+        "room-a",
+        {"annotation_id": "550e8400-e29b-41d4-a716-446655440001", "message": "请删除"},
+    )
+    validate_client_message(message)
+
+
+def test_annotation_delete_vote_valid():
+    message = build_message(
+        "annotation_delete_vote",
+        "alice",
+        "room-a",
+        {
+            "request_id": "550e8400-e29b-41d4-a716-446655440002",
+            "annotation_id": "550e8400-e29b-41d4-a716-446655440001",
+            "vote": "approve",
+        },
+    )
+    validate_client_message(message)
+
+
 def test_annotation_rejects_script_in_content():
     message = build_message(
         "annotation",

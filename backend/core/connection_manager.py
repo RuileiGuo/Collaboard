@@ -138,6 +138,27 @@ class ConnectionManager:
                 return None
             return self._connections.get(connection_id)
 
+    async def list_connected_user_ids(self) -> Set[str]:
+        async with self._lock:
+            return set(self._user_index.keys())
+
+    async def find_user_connection_in_room(
+        self,
+        room_id: str,
+        user_id: str,
+        *,
+        exclude_connection_id: Optional[str] = None,
+    ) -> Optional[_ConnEntry]:
+        """Return a live connection in room_id bound to user_id, if any."""
+        async with self._lock:
+            for cid in self._room_index.get(room_id, set()):
+                if exclude_connection_id is not None and cid == exclude_connection_id:
+                    continue
+                entry = self._connections.get(cid)
+                if entry is not None and entry.user_id == user_id:
+                    return entry
+        return None
+
     async def count_room_connections(self, room_id: str) -> int:
         async with self._lock:
             return len(self._room_index.get(room_id, set()))
