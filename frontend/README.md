@@ -13,6 +13,8 @@ backend\run.bat
 
 Open `http://127.0.0.1:8000/`.
 
+When the frontend is served by the backend, the **Server URL** field auto-detects the current host and uses `/ws` on that same origin. If you deploy the app to `https://your-domain.example`, the browser will default to `wss://your-domain.example/ws`.
+
 ## Run (static only)
 
 For UI-only debugging without the API:
@@ -22,4 +24,4 @@ cd d:\Vscode_python\Collaboard\frontend
 python -m http.server 5173
 ```
 
-Set **Server URL** in the UI to `ws://127.0.0.1:8000/ws` (the client expands this to `/ws/{connection_id}`).
+Set **Server URL** in the UI to your backend websocket base such as `ws://127.0.0.1:8000/ws` or `wss://your-domain.example/ws` (the client expands this to `/ws/{connection_id}`).

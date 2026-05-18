@@ -35,6 +35,8 @@ class MessageType(str, Enum):
     DRAW = "draw"
     ANNOTATION = "annotation"
     ANNOTATION_DELETE = "annotation_delete"
+    ANNOTATION_DELETE_REQUEST = "annotation_delete_request"
+    ANNOTATION_DELETE_VOTE = "annotation_delete_vote"
     ANNOTATION_RESTORE = "annotation_restore"
     DRAW_UNDO = "draw_undo"
     DRAW_REDO = "draw_redo"
@@ -51,6 +53,8 @@ class BroadcastEventType(str, Enum):
     DRAW = "draw"
     STROKE_UNDONE = "stroke_undone"
     ANNOTATION = "annotation"
+    ANNOTATION_DELETE_REQUESTED = "annotation_delete_requested"
+    ANNOTATION_DELETE_REJECTED = "annotation_delete_rejected"
     ANNOTATION_REMOVED = "annotation_removed"
     CLEAR = "clear"
     CLEAR_PROPOSE = "clear_propose"
@@ -69,12 +73,15 @@ class ErrorCode(str, Enum):
     UNAUTHORIZED = "UNAUTHORIZED"
     RATE_LIMIT = "RATE_LIMIT"
     USER_ALREADY_JOINED = "USER_ALREADY_JOINED"
+    CONNECTION_ALREADY_EXISTS = "CONNECTION_ALREADY_EXISTS"
     SEQUENCE_CONFLICT = "SEQUENCE_CONFLICT"
     INTERNAL_ERROR = "INTERNAL_ERROR"
     CLEAR_REQUIRES_CONSENSUS = "CLEAR_REQUIRES_CONSENSUS"
     CLEAR_PROPOSAL_ACTIVE = "CLEAR_PROPOSAL_ACTIVE"
     CLEAR_PROPOSAL_NOT_FOUND = "CLEAR_PROPOSAL_NOT_FOUND"
     CLEAR_VOTE_DUPLICATE = "CLEAR_VOTE_DUPLICATE"
+    ANNOTATION_DELETE_REQUEST_ACTIVE = "ANNOTATION_DELETE_REQUEST_ACTIVE"
+    ANNOTATION_DELETE_REQUEST_NOT_FOUND = "ANNOTATION_DELETE_REQUEST_NOT_FOUND"
     ANNOTATION_NOT_FOUND = "ANNOTATION_NOT_FOUND"
     STROKE_NOT_FOUND = "STROKE_NOT_FOUND"
 
@@ -137,6 +144,15 @@ class ClearProposalState:
 
 
 @dataclass
+class AnnotationDeleteRequestState:
+    request_id: str
+    annotation_id: str
+    requester_id: str
+    target_author_id: str
+    expires_ms: int
+
+
+@dataclass
 class Room:
     room_id: str
     state: RoomState = RoomState.PENDING_INIT
@@ -150,3 +166,4 @@ class Room:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     event_rate_bucket: Optional[Any] = field(default=None, repr=False)
     clear_proposal: Optional[ClearProposalState] = field(default=None, repr=False)
+    annotation_delete_requests: Dict[str, AnnotationDeleteRequestState] = field(default_factory=dict, repr=False)

@@ -50,6 +50,8 @@ except Exception:  # pragma: no cover
         DRAW = "draw"
         ANNOTATION = "annotation"
         ANNOTATION_DELETE = "annotation_delete"
+        ANNOTATION_DELETE_REQUEST = "annotation_delete_request"
+        ANNOTATION_DELETE_VOTE = "annotation_delete_vote"
         ANNOTATION_RESTORE = "annotation_restore"
         DRAW_UNDO = "draw_undo"
         DRAW_REDO = "draw_redo"
@@ -380,6 +382,8 @@ class StateManager:
                     str(getattr(MessageType, "DRAW", "draw")),
                     str(getattr(MessageType, "ANNOTATION", "annotation")),
                     str(getattr(MessageType, "ANNOTATION_DELETE", "annotation_delete")),
+                    str(getattr(MessageType, "ANNOTATION_DELETE_REQUEST", "annotation_delete_request")),
+                    str(getattr(MessageType, "ANNOTATION_DELETE_VOTE", "annotation_delete_vote")),
                     str(getattr(MessageType, "ANNOTATION_RESTORE", "annotation_restore")),
                     str(getattr(MessageType, "DRAW_UNDO", "draw_undo")),
                     str(getattr(MessageType, "DRAW_REDO", "draw_redo")),
@@ -391,6 +395,8 @@ class StateManager:
                     "draw",
                     "annotation",
                     "annotation_delete",
+                    "annotation_delete_request",
+                    "annotation_delete_vote",
                     "annotation_restore",
                     "draw_undo",
                     "draw_redo",

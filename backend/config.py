@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import os
+
 APP_NAME = "CollabBoard Backend"
 
-HOST = "127.0.0.1"
-PORT = 8000
+HOST = os.getenv("COLLABOARD_HOST", "0.0.0.0")
+PORT = int(os.getenv("COLLABOARD_PORT", "8000"))
 
 LOG_LEVEL = "INFO"
 

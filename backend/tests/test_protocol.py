@@ -17,6 +17,23 @@ def test_valid_join_message_passes():
     validate_client_message(message)
 
 
+def test_join_with_reserved_security_envelope_passes():
+    message = build_message(
+        "join",
+        "alice",
+        "room-a",
+        {"client_version": "1.0.0", "metadata": {"user_name": "Alice", "client_type": "web"}},
+    )
+    message["security"] = {
+        "session_id": "sess-001",
+        "nonce": "nonce-12345678",
+        "issued_at": message["timestamp"],
+        "device_id": "ipad-alice",
+        "capabilities": ["join", "draw"],
+    }
+    validate_client_message(message)
+
+
 def test_invalid_uuid_fails():
     message = build_message(
         "join",

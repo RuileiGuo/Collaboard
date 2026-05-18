@@ -61,6 +61,11 @@ class ConnectionManager:
         self._lock = asyncio.Lock()
         self._connections: Dict[str, _ConnEntry] = {}
         self._room_index: Dict[str, Set[str]] = {}
+        self._user_index: Dict[str, str] = {}
+
+    async def is_connection_id_taken(self, connection_id: str) -> bool:
+        async with self._lock:
+            return connection_id in self._connections
 
     async def register(
         self,
@@ -79,6 +84,7 @@ class ConnectionManager:
         async with self._lock:
             prev = self._connections.get(connection_id)
             prev_room = prev.room_id if prev else None
+            prev_user = prev.user_id if prev else None
 
             if prev is None and websocket is None:
                 raise ValueError("websocket is required when registering a new connection")
@@ -87,7 +93,10 @@ class ConnectionManager:
             if websocket is not None:
                 entry.websocket = websocket
             if user_id is not None:
+                if prev_user and prev_user != user_id:
+                    self._user_index.pop(prev_user, None)
                 entry.user_id = user_id
+                self._user_index[user_id] = connection_id
             if room_id is not None:
                 entry.room_id = room_id
             self._connections[connection_id] = entry
@@ -108,6 +117,8 @@ class ConnectionManager:
             entry = self._connections.pop(connection_id, None)
             if not entry:
                 return
+            if entry.user_id and self._user_index.get(entry.user_id) == connection_id:
+                self._user_index.pop(entry.user_id, None)
             if entry.room_id:
                 ids = self._room_index.get(entry.room_id)
                 if ids:
@@ -122,10 +133,10 @@ class ConnectionManager:
 
     async def get_connection_by_user(self, user_id: str) -> Optional[_ConnEntry]:
         async with self._lock:
-            for entry in self._connections.values():
-                if entry.user_id == user_id:
-                    return entry
-        return None
+            connection_id = self._user_index.get(user_id)
+            if connection_id is None:
+                return None
+            return self._connections.get(connection_id)
 
     async def count_room_connections(self, room_id: str) -> int:
         async with self._lock:

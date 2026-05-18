@@ -26,6 +26,8 @@ CLIENT_MESSAGE_SCHEMA: Dict[str, Any] = {
                 MessageType.DRAW.value,
                 MessageType.ANNOTATION.value,
                 MessageType.ANNOTATION_DELETE.value,
+                MessageType.ANNOTATION_DELETE_REQUEST.value,
+                MessageType.ANNOTATION_DELETE_VOTE.value,
                 MessageType.ANNOTATION_RESTORE.value,
                 MessageType.DRAW_UNDO.value,
                 MessageType.DRAW_REDO.value,
@@ -39,6 +41,24 @@ CLIENT_MESSAGE_SCHEMA: Dict[str, Any] = {
         "user_id": {"type": "string", "minLength": 1, "maxLength": 100},
         "room_id": {"type": "string", "minLength": 1, "maxLength": 100},
         "sequence_id": {"type": ["null"]},
+        "security": {
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string", "minLength": 1, "maxLength": 200},
+                "auth_token": {"type": "string", "minLength": 1, "maxLength": 4096},
+                "nonce": {"type": "string", "minLength": 8, "maxLength": 256},
+                "signature": {"type": "string", "minLength": 16, "maxLength": 4096},
+                "issued_at": {"type": "number", "minimum": 0},
+                "device_id": {"type": "string", "minLength": 1, "maxLength": 200},
+                "capabilities": {
+                    "type": "array",
+                    "maxItems": 32,
+                    "items": {"type": "string", "minLength": 1, "maxLength": 100},
+                },
+                "risk_context": {"type": "object", "additionalProperties": True},
+            },
+            "additionalProperties": False,
+        },
         "payload": {"type": "object"},
     },
     "required": ["msg_id", "type", "timestamp", "user_id", "room_id", "payload"],
@@ -123,6 +143,27 @@ ANNOTATION_DELETE_PAYLOAD_SCHEMA: Dict[str, Any] = {
     "additionalProperties": False,
 }
 
+ANNOTATION_DELETE_REQUEST_PAYLOAD_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "annotation_id": {"type": "string", "pattern": UUID_PATTERN},
+        "message": {"type": "string", "maxLength": 300},
+    },
+    "required": ["annotation_id"],
+    "additionalProperties": False,
+}
+
+ANNOTATION_DELETE_VOTE_PAYLOAD_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "request_id": {"type": "string", "pattern": UUID_PATTERN},
+        "annotation_id": {"type": "string", "pattern": UUID_PATTERN},
+        "vote": {"type": "string", "enum": ["approve", "reject"]},
+    },
+    "required": ["request_id", "annotation_id", "vote"],
+    "additionalProperties": False,
+}
+
 ANNOTATION_RESTORE_PAYLOAD_SCHEMA: Dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -202,6 +243,8 @@ PAYLOAD_SCHEMAS: Dict[str, Dict[str, Any]] = {
     MessageType.DRAW.value: DRAW_PAYLOAD_SCHEMA,
     MessageType.ANNOTATION.value: ANNOTATION_PAYLOAD_SCHEMA,
     MessageType.ANNOTATION_DELETE.value: ANNOTATION_DELETE_PAYLOAD_SCHEMA,
+    MessageType.ANNOTATION_DELETE_REQUEST.value: ANNOTATION_DELETE_REQUEST_PAYLOAD_SCHEMA,
+    MessageType.ANNOTATION_DELETE_VOTE.value: ANNOTATION_DELETE_VOTE_PAYLOAD_SCHEMA,
     MessageType.ANNOTATION_RESTORE.value: ANNOTATION_RESTORE_PAYLOAD_SCHEMA,
     MessageType.DRAW_UNDO.value: DRAW_UNDO_PAYLOAD_SCHEMA,
     MessageType.DRAW_REDO.value: DRAW_REDO_PAYLOAD_SCHEMA,

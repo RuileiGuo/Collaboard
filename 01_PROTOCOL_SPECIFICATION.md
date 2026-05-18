@@ -969,3 +969,44 @@ T=4: 新客户端 Carol JOIN 后重放 canvas_history
 ---
 
 **下一步**: 转到 `02_STATE_MACHINE_DESIGN.md` 进行状态机设计
+
+---
+
+## 12. Security Envelope 预留
+
+为后续接入正式鉴权、请求签名、反重放、设备风控与能力控制，协议预留一个可选顶层字段 `security`。当前版本可不发送；若发送，建议结构如下：
+
+```json
+{
+  "security": {
+    "session_id": "sess-001",
+    "auth_token": "optional-room-or-bearer-token",
+    "nonce": "nonce-12345678",
+    "signature": "optional-hmac-or-signature",
+    "issued_at": 1712889600000,
+    "device_id": "ipad-alice",
+    "capabilities": ["join", "draw"],
+    "risk_context": {
+      "source": "web",
+      "trust_level": "baseline"
+    }
+  }
+}
+```
+
+推荐语义：
+
+- `session_id`: 标识一次登录态或协作会话。
+- `auth_token`: 房间访问令牌、Bearer token 或临时票据。
+- `nonce`: 单请求随机数，用于抵御重放攻击。
+- `signature`: 对关键字段做 HMAC/数字签名，防止消息被篡改。
+- `issued_at`: 配合时间窗口校验请求时效。
+- `device_id`: 设备标识，便于审计、风控与并发会话管理。
+- `capabilities`: 服务端签发的能力集合，如 `draw`、`annotation`、`moderate`。
+- `risk_context`: 预留给代理来源、挑战状态、风险标签等扩展。
+
+当前实现状态：
+
+- Schema 已预留该字段的结构校验。
+- 当前后端不会强制验签、校验 token 或拒绝缺失的 `security`。
+- 后续若启用安全协议，建议在 `join` 阶段验证 `auth_token`，在所有状态变更消息上校验 `nonce + signature`，并为失败情况补充 `AUTH_REQUIRED`、`INVALID_SIGNATURE`、`NONCE_REPLAY`、`CAPABILITY_DENIED` 等错误码。

@@ -9,6 +9,8 @@ from backend.core.room_manager import RoomManager
 from backend.core.state_manager import StateManager
 from backend.core.schemas import validate_client_message
 from backend.handlers.annotation_delete_handler import AnnotationDeleteHandler
+from backend.handlers.annotation_delete_request_handler import AnnotationDeleteRequestHandler
+from backend.handlers.annotation_delete_vote_handler import AnnotationDeleteVoteHandler
 from backend.handlers.annotation_handler import AnnotationHandler
 from backend.handlers.annotation_restore_handler import AnnotationRestoreHandler
 from backend.handlers.clear_handler import ClearHandler
@@ -34,6 +36,8 @@ def _build_router(stack, *, rate_capacity: int = 100, rate_refill: float = 100.0
             "draw_redo": DrawRedoHandler(),
             "annotation": AnnotationHandler(),
             "annotation_delete": AnnotationDeleteHandler(),
+            "annotation_delete_request": AnnotationDeleteRequestHandler(),
+            "annotation_delete_vote": AnnotationDeleteVoteHandler(),
             "annotation_restore": AnnotationRestoreHandler(),
             "clear": ClearHandler(),
             "clear_propose": ClearProposeHandler(),

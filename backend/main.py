@@ -32,6 +32,8 @@ from backend.core.room_manager import RoomManager
 from backend.core.schemas import validate_client_message
 from backend.core.state_manager import StateManager
 from backend.handlers.annotation_delete_handler import AnnotationDeleteHandler
+from backend.handlers.annotation_delete_request_handler import AnnotationDeleteRequestHandler
+from backend.handlers.annotation_delete_vote_handler import AnnotationDeleteVoteHandler
 from backend.handlers.annotation_handler import AnnotationHandler
 from backend.handlers.annotation_restore_handler import AnnotationRestoreHandler
 from backend.handlers.clear_handler import ClearHandler
@@ -40,6 +42,7 @@ from backend.handlers.clear_vote_handler import ClearVoteHandler
 from backend.handlers.draw_handler import DrawHandler
 from backend.handlers.draw_redo_handler import DrawRedoHandler
 from backend.handlers.draw_undo_handler import DrawUndoHandler
+from backend.core.models import ErrorCode, UserState
 from backend.handlers.error_handler import ErrorBuilder
 from backend.handlers.join_handler import JoinHandler
 from backend.handlers.leave_handler import LeaveHandler
@@ -54,11 +57,16 @@ logger = get_logger(__name__)
 async def _cleanup_disconnected_user(app: FastAPI, user_id: str, room_id: str, reason: str) -> None:
     room_manager: RoomManager = app.state.room_manager
     connection_manager: ConnectionManager = app.state.connection_manager
+    state_manager: StateManager = app.state.state_manager
     error_builder: ErrorBuilder = app.state.error_builder
 
     room = await room_manager.get(room_id)
     if room is None or not await room_manager.is_user_in_room(room_id, user_id):
         return
+
+    current_state = state_manager.get_user_state(user_id)
+    if current_state in (UserState.JOINED, UserState.ACTIVE, UserState.IDLE):
+        state_manager.on_leave(user_id)
 
     user_name = await room_manager.get_user_display_name(room_id, user_id)
 
@@ -147,6 +155,8 @@ def create_app() -> FastAPI:
                 "draw_redo": DrawRedoHandler(),
                 "annotation": AnnotationHandler(),
                 "annotation_delete": AnnotationDeleteHandler(),
+                "annotation_delete_request": AnnotationDeleteRequestHandler(),
+                "annotation_delete_vote": AnnotationDeleteVoteHandler(),
                 "annotation_restore": AnnotationRestoreHandler(),
                 "clear": ClearHandler(),
                 "clear_propose": ClearProposeHandler(),
@@ -195,8 +205,18 @@ def create_app() -> FastAPI:
         connection_manager: ConnectionManager = app.state.connection_manager
         state_manager: StateManager = app.state.state_manager
         router: MessageRouter = app.state.router
+        error_builder: ErrorBuilder = app.state.error_builder
 
         await websocket.accept()
+        if await connection_manager.is_connection_id_taken(connection_id):
+            duplicate_ack = error_builder.build_error(
+                ErrorCode.CONNECTION_ALREADY_EXISTS,
+                details={"connection_id": connection_id},
+            )
+            await websocket.send_text(json.dumps(duplicate_ack, separators=(",", ":"), ensure_ascii=True))
+            await websocket.close(code=4001, reason="connection_id already in use")
+            return
+
         await connection_manager.register(connection_id, websocket)
 
         try:
@@ -206,13 +226,28 @@ def create_app() -> FastAPI:
                     preview = json.loads(raw_text)
                 except json.JSONDecodeError:
                     preview = None
+                reject_user_bind = False
                 if isinstance(preview, dict):
                     user_id = preview.get("user_id")
                     if isinstance(user_id, str):
                         connection = await connection_manager.get_connection(connection_id)
                         if connection and connection.user_id is None:
-                            state_manager.on_connected(user_id, connection_id=connection_id)
-                            await connection_manager.register(connection_id, user_id=user_id)
+                            existing = await connection_manager.get_connection_by_user(user_id)
+                            if existing and existing.connection_id != connection_id:
+                                duplicate_user_ack = error_builder.build_error(
+                                    ErrorCode.USER_ALREADY_JOINED,
+                                    message="User ID already in use",
+                                    request_msg_id=str(preview.get("msg_id")) if preview.get("msg_id") else None,
+                                    details={"user_id": user_id},
+                                )
+                                await connection_manager.send(connection_id, duplicate_user_ack)
+                                reject_user_bind = True
+                            else:
+                                state_manager.on_connected(user_id, connection_id=connection_id)
+                                await connection_manager.register(connection_id, user_id=user_id)
+
+                if reject_user_bind:
+                    break
 
                 result = await router.handle_raw(raw_text, connection_id=connection_id)
                 await connection_manager.send(connection_id, result.ack)

@@ -29,7 +29,8 @@
       <section class="panel controls">
         <div class="field">
           <label for="server-url">Server URL</label>
-          <input id="server-url" value="ws://127.0.0.1:8000/ws" />
+          <input id="server-url" placeholder="ws://127.0.0.1:8000/ws" />
+          <p class="field-hint">须为 ws://IP:8000/ws 格式（可只填 183.172.38.82:8000 会自动补全）。iPad 与 PC 需指向同一后端，Room ID 完全一致。</p>
         </div>
         <div class="field">
           <label for="connection-id">Connection ID</label>
@@ -48,9 +49,9 @@
           <input id="user-name" placeholder="Alice" />
         </div>
         <div class="actions">
-          <button id="join-btn">Join</button>
-          <button id="leave-btn" class="secondary">Leave</button>
-          <button id="sync-btn" class="secondary">Sync</button>
+          <button type="button" id="join-btn">Join</button>
+          <button type="button" id="leave-btn" class="secondary">Leave</button>
+          <button type="button" id="sync-btn" class="secondary">Sync</button>
         </div>
       </section>
 
@@ -129,8 +130,80 @@
           <button type="button" id="leave-report-close" class="secondary wide-btn">关闭</button>
         </div>
       </div>
+      <div id="annotation-delete-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="annotation-delete-summary">
+        <div class="modal-card">
+          <h3 class="modal-title">Annotation Delete Request</h3>
+          <p id="annotation-delete-summary"></p>
+          <div class="vote-actions">
+            <button type="button" id="annotation-delete-approve">Approve Delete</button>
+            <button type="button" id="annotation-delete-reject" class="secondary">Reject</button>
+          </div>
+        </div>
+      </div>
     </main>
 
+    <script>
+      (function () {
+        function defaultWsUrl() {
+          var p = location.protocol;
+          if (p === "http:" || p === "https:") {
+            return (p === "https:" ? "wss:" : "ws:") + "//" + location.host + "/ws";
+          }
+          return "ws://127.0.0.1:8000/ws";
+        }
+        function normalizeWsField(raw) {
+          var value = String(raw || "").trim();
+          if (!value) {
+            return defaultWsUrl();
+          }
+          if (/^https?:\/\//i.test(value)) {
+            value = value.replace(/^http:/i, "ws:").replace(/^https:/i, "wss:");
+          } else if (!/^wss?:\/\//i.test(value)) {
+            value = "ws://" + value.replace(/^\/\//, "");
+          }
+          value = value.replace(/\/ws\/?$/i, "").replace(/\/$/, "");
+          return value + "/ws";
+        }
+        function prefillServerUrl() {
+          var input = document.getElementById("server-url");
+          if (input && !input.value.trim()) {
+            input.value = defaultWsUrl();
+          } else if (input) {
+            input.value = normalizeWsField(input.value);
+          }
+        }
+        window.addEventListener("error", function (event) {
+          var err = document.getElementById("error-text");
+          if (err) {
+            err.textContent = "脚本错误：" + (event.message || "unknown");
+          }
+        });
+        window.addEventListener("unhandledrejection", function (event) {
+          var err = document.getElementById("error-text");
+          if (err) {
+            err.textContent = "脚本异常：" + String(event.reason || "unknown");
+          }
+        });
+        if (location.protocol === "file:") {
+          document.addEventListener("DOMContentLoaded", function () {
+            var status = document.getElementById("server-status");
+            var err = document.getElementById("error-text");
+            if (status) {
+              status.textContent = "请启动后端并访问 http://127.0.0.1:8000/（勿直接打开 HTML 文件）";
+            }
+            if (err) {
+              err.textContent = "本地 file:// 打开时模块脚本无法加载，Join 按钮无效。";
+            }
+          });
+        } else {
+          if (document.readyState === "loading") {
+            document.addEventListener("DOMContentLoaded", prefillServerUrl);
+          } else {
+            prefillServerUrl();
+          }
+        }
+      })();
+    </script>
     <script type="module" src="/frontend/app.js"></script>
   </body>
 </html>

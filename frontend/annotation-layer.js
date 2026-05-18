@@ -25,7 +25,7 @@ export class AnnotationLayer {
     }
   }
 
-  addFromPayload(payload, authorUserId = "") {
+  addFromPayload(payload, currentUserId = "") {
     const id = payload.annotation_id;
     if (!id || this.byId.has(id)) {
       return;
@@ -33,11 +33,19 @@ export class AnnotationLayer {
     const div = document.createElement("div");
     div.className = "board-annotation";
     div.dataset.annotationId = id;
+
+    const authorUserId = String(payload.user_id || "");
     if (authorUserId) {
       div.dataset.authorUserId = authorUserId;
-      div.classList.add("board-annotation--mine");
-      div.title = "点击删除此标注";
     }
+    if (authorUserId && currentUserId && authorUserId === currentUserId) {
+      div.classList.add("board-annotation--mine");
+      div.title = "Click to delete your annotation";
+    } else if (authorUserId) {
+      div.classList.add("board-annotation--remote");
+      div.title = "Click to request deletion from the author";
+    }
+
     div.style.left = `${Number(payload.x)}px`;
     div.style.top = `${Number(payload.y)}px`;
     div.style.fontSize = `${Number(payload.font_size)}px`;

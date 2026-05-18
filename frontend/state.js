@@ -5,14 +5,19 @@ export class AppState {
     this.userName = "";
     this.roomId = "";
     this.serverUrl = "";
+    this.securityContext = null;
     this.connected = false;
     this.joined = false;
+    /** @type {'idle' | 'connecting' | 'joined' | 'leaving'} */
+    this.sessionPhase = "idle";
     this.roomState = "idle";
     this.currentSequence = -1;
     this.lastReceivedSequence = -1;
     this.activeTool = "pen";
     /** @type {{ proposal_id: string, proposer_id: string, proposer_name: string, expires_ms: number, required_voters: string[] } | null} */
     this.pendingClearProposal = null;
+    /** @type {{ request_id: string, annotation_id: string, requester_id: string, requester_name: string, target_author_id: string, expires_ms: number, message?: string } | null} */
+    this.pendingAnnotationDeleteRequest = null;
     this.color = "#111111";
     this.brushSize = 4;
     this.pendingStrokes = new Map();

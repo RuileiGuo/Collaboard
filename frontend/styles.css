@@ -164,6 +164,24 @@ button {
   font-weight: 700;
 }
 
+button:disabled,
+button.btn-locked {
+  opacity: 0.45;
+  cursor: not-allowed;
+  pointer-events: none;
+  background: rgba(255, 255, 255, 0.12) !important;
+  color: var(--muted) !important;
+  border-color: var(--line) !important;
+  -webkit-text-fill-color: var(--muted);
+}
+
+button.btn-joined:disabled {
+  opacity: 0.7;
+  background: rgba(124, 247, 212, 0.18) !important;
+  color: var(--accent) !important;
+  -webkit-text-fill-color: var(--accent);
+}
+
 button.secondary {
   color: var(--text);
   background: rgba(255, 255, 255, 0.05);
@@ -274,6 +292,11 @@ canvas {
 }
 
 .board-annotation--mine {
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.board-annotation--remote {
   pointer-events: auto;
   cursor: pointer;
 }

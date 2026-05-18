@@ -14,6 +14,14 @@ cd d:\Vscode_python\Collaboard
 backend\run.bat
 ```
 
+By default `backend\run.bat` binds to `0.0.0.0:8000`, so other devices can reach it if your firewall, router, and deployment network allow inbound access. To keep it local-only, override the host before starting:
+
+```powershell
+$env:COLLABOARD_HOST = "127.0.0.1"
+$env:COLLABOARD_PORT = "8000"
+backend\run.bat
+```
+
 The backend serves:
 
 - `GET /health`

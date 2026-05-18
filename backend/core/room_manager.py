@@ -8,7 +8,7 @@ import uuid
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from backend import config
-from backend.core.models import BroadcastEventType, ClearProposalState, Room, RoomState
+from backend.core.models import AnnotationDeleteRequestState, BroadcastEventType, ClearProposalState, Room, RoomState
 from backend.utils.exceptions import RoomEventRateLimitError, RoomNotFoundError, UserAlreadyJoinedError
 from backend.utils.rate_limit import TokenBucket
 
@@ -116,6 +116,48 @@ class RoomManager:
                     visible = False
                     author = None
         return visible, author
+
+    async def get_annotation_delete_request(
+        self, room_id: str, annotation_id: str
+    ) -> Optional[AnnotationDeleteRequestState]:
+        room = await self.get(room_id)
+        if room is None:
+            raise RoomNotFoundError(room_id)
+        async with room.lock:
+            return room.annotation_delete_requests.get(annotation_id)
+
+    async def create_annotation_delete_request(
+        self,
+        room_id: str,
+        *,
+        annotation_id: str,
+        requester_id: str,
+        target_author_id: str,
+        request_id: str,
+        expires_ms: int,
+    ) -> AnnotationDeleteRequestState:
+        room = await self.get(room_id)
+        if room is None:
+            raise RoomNotFoundError(room_id)
+        state = AnnotationDeleteRequestState(
+            request_id=request_id,
+            annotation_id=annotation_id,
+            requester_id=requester_id,
+            target_author_id=target_author_id,
+            expires_ms=expires_ms,
+        )
+        async with room.lock:
+            room.annotation_delete_requests[annotation_id] = state
+        return state
+
+    async def pop_annotation_delete_request(
+        self, room_id: str, annotation_id: str
+    ) -> Optional[AnnotationDeleteRequestState]:
+        room = await self.get(room_id)
+        if room is None:
+            raise RoomNotFoundError(room_id)
+        async with room.lock:
+            return room.annotation_delete_requests.pop(annotation_id, None)
 
     async def stroke_visible_and_author(self, room_id: str, stroke_id: str) -> tuple[bool, Optional[str]]:
         """
@@ -312,6 +354,7 @@ class RoomManager:
             room.idle_deadline = None
             room.pending_deadline = None
             room.clear_proposal = None
+            room.annotation_delete_requests.clear()
         return room
 
     async def pop_expired_clear_proposal_broadcast_if_any(

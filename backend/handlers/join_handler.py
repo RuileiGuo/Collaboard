@@ -31,6 +31,19 @@ class JoinHandler:
                 )
             )
 
+        existing_room = await ctx.room_manager.find_room_for_user(user_id)
+        if existing_room is not None and existing_room != room_id:
+            return HandlerResult(
+                ack=ctx.error_builder.build_error(
+                    ErrorCode.USER_ALREADY_JOINED,
+                    now_ms=ctx.now_ms,
+                    request_msg_id=msg_id,
+                    room_id=room_id,
+                    message="User is already in another room",
+                    details={"user_id": user_id, "room_id": existing_room},
+                )
+            )
+
         try:
             await ctx.room_manager.join(room_id, user_id, metadata=metadata)
         except UserAlreadyJoinedError as exc:

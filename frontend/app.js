@@ -4,6 +4,8 @@ import { AppState } from "./state.js";
 import {
   buildAnnotation,
   buildAnnotationDelete,
+  buildAnnotationDeleteRequest,
+  buildAnnotationDeleteVote,
   buildAnnotationRestore,
   buildClearPropose,
   buildClearVote,
@@ -16,58 +18,138 @@ import {
   isAck,
   isBroadcast,
   isError,
+  uuid,
 } from "./protocol.js";
 
 const state = new AppState();
 
-const els = {
-  serverUrl: document.getElementById("server-url"),
-  connectionId: document.getElementById("connection-id"),
-  roomId: document.getElementById("room-id"),
-  userId: document.getElementById("user-id"),
-  userName: document.getElementById("user-name"),
-  joinBtn: document.getElementById("join-btn"),
-  leaveBtn: document.getElementById("leave-btn"),
-  syncBtn: document.getElementById("sync-btn"),
-  brushSize: document.getElementById("brush-size"),
-  brushColor: document.getElementById("brush-color"),
-  userList: document.getElementById("user-list"),
-  eventLog: document.getElementById("event-log"),
-  board: document.getElementById("board"),
-  errorText: document.getElementById("error-text"),
-  serverStatus: document.getElementById("server-status"),
-  connectionPill: document.getElementById("connection-pill"),
-  sequenceText: document.getElementById("sequence-text"),
-  roomStateText: document.getElementById("room-state-text"),
-  boardStack: document.getElementById("board-stack"),
-  annotationLayer: document.getElementById("annotation-layer"),
-  clearVoteModal: document.getElementById("clear-vote-modal"),
-  clearVoteSummary: document.getElementById("clear-vote-summary"),
-  clearVoteApprove: document.getElementById("clear-vote-approve"),
-  clearVoteReject: document.getElementById("clear-vote-reject"),
-  clearProposeBtn: document.getElementById("clear-propose-btn"),
-  undoBtn: document.getElementById("undo-btn"),
-  redoBtn: document.getElementById("redo-btn"),
-  leaveReportModal: document.getElementById("leave-report-modal"),
-  leaveReportBody: document.getElementById("leave-report-body"),
-  leaveReportClose: document.getElementById("leave-report-close"),
-};
+/** @type {Record<string, HTMLElement | null>} */
+let els = {};
+/** @type {AnnotationLayer | null} */
+let annotations = null;
+/** @type {CanvasBoard | null} */
+let board = null;
+let uiReady = false;
 
-const annotations = new AnnotationLayer(els.annotationLayer);
-const board = new CanvasBoard(els.board);
+function queryDomElements() {
+  els = {
+    serverUrl: document.getElementById("server-url"),
+    connectionId: document.getElementById("connection-id"),
+    roomId: document.getElementById("room-id"),
+    userId: document.getElementById("user-id"),
+    userName: document.getElementById("user-name"),
+    joinBtn: document.getElementById("join-btn"),
+    leaveBtn: document.getElementById("leave-btn"),
+    syncBtn: document.getElementById("sync-btn"),
+    brushSize: document.getElementById("brush-size"),
+    brushColor: document.getElementById("brush-color"),
+    userList: document.getElementById("user-list"),
+    eventLog: document.getElementById("event-log"),
+    board: document.getElementById("board"),
+    errorText: document.getElementById("error-text"),
+    serverStatus: document.getElementById("server-status"),
+    connectionPill: document.getElementById("connection-pill"),
+    sequenceText: document.getElementById("sequence-text"),
+    roomStateText: document.getElementById("room-state-text"),
+    boardStack: document.getElementById("board-stack"),
+    annotationLayer: document.getElementById("annotation-layer"),
+    clearVoteModal: document.getElementById("clear-vote-modal"),
+    clearVoteSummary: document.getElementById("clear-vote-summary"),
+    clearVoteApprove: document.getElementById("clear-vote-approve"),
+    clearVoteReject: document.getElementById("clear-vote-reject"),
+    clearProposeBtn: document.getElementById("clear-propose-btn"),
+    undoBtn: document.getElementById("undo-btn"),
+    redoBtn: document.getElementById("redo-btn"),
+    leaveReportModal: document.getElementById("leave-report-modal"),
+    leaveReportBody: document.getElementById("leave-report-body"),
+    leaveReportClose: document.getElementById("leave-report-close"),
+    annotationDeleteModal: document.getElementById("annotation-delete-modal"),
+    annotationDeleteSummary: document.getElementById("annotation-delete-summary"),
+    annotationDeleteApprove: document.getElementById("annotation-delete-approve"),
+    annotationDeleteReject: document.getElementById("annotation-delete-reject"),
+  };
+}
 let drawing = false;
 let currentStroke = null;
 let reconnectTimer = null;
 let pendingReconnect = false;
+/** @type {{ statsSnapshot: object, durationMs: number, roomLabel: string } | null} */
+let pendingLeaveReport = null;
 
-function setStatus(text, kind = "") {
-  els.serverStatus.textContent = text;
-  els.connectionPill.textContent = state.connected ? "connected" : "disconnected";
+function defaultServerUrl() {
+  const { protocol, host } = window.location;
+  if (protocol === "http:" || protocol === "https:") {
+    const wsProtocol = protocol === "https:" ? "wss:" : "ws:";
+    return `${wsProtocol}//${host}/ws`;
+  }
+  return "ws://127.0.0.1:8000/ws";
+}
+
+/** Normalize Server URL to ws(s)://host:port (no trailing /ws). */
+function normalizeServerBaseUrl(raw) {
+  let value = String(raw || "").trim();
+  if (!value) {
+    return normalizeServerBaseUrl(defaultServerUrl());
+  }
+  if (/^https?:\/\//i.test(value)) {
+    value = value.replace(/^http:/i, "ws:").replace(/^https:/i, "wss:");
+  } else if (!/^wss?:\/\//i.test(value)) {
+    value = `ws://${value.replace(/^\/\//, "")}`;
+  }
+  return value.replace(/\/ws\/?$/i, "").replace(/\/$/, "");
+}
+
+function formatServerUrlField(raw) {
+  return `${normalizeServerBaseUrl(raw)}/ws`;
+}
+
+function isMobileLikeClient() {
+  return /iPhone|iPad|iPod|Android|Mobile/i.test(navigator.userAgent || "");
+}
+
+function warnIfUnreachableServerUrl() {
+  const host = location.hostname;
+  if (!isMobileLikeClient()) {
+    return;
+  }
+  if (host === "127.0.0.1" || host === "localhost") {
+    setError(
+      "iPad/手机不能使用 127.0.0.1。请在地址栏改用电脑的局域网 IP，例如 http://192.168.x.x:8000/，并确保 Server URL 同步为该 IP。",
+    );
+    setStatus("需要局域网 IP", "error");
+  }
+}
+
+function refreshConnectionPill(kind = "") {
+  if (!els.connectionPill) {
+    return;
+  }
+  let label = "disconnected";
+  if (state.sessionPhase === "joined" && state.connected) {
+    label = "connected";
+  } else if (state.sessionPhase === "connecting") {
+    label = "connecting";
+  } else if (state.sessionPhase === "leaving") {
+    label = "leaving";
+  } else if (state.connected) {
+    label = "connected";
+  }
+  els.connectionPill.textContent = label;
   els.connectionPill.className = `pill ${kind}`.trim();
 }
 
+function setStatus(text, kind = "") {
+  if (els.serverStatus) {
+    els.serverStatus.textContent = text;
+  }
+  refreshConnectionPill(kind);
+}
+
 function setError(text) {
-  els.errorText.textContent = text;
+  const target = els.errorText || document.getElementById("error-text");
+  if (target) {
+    target.textContent = text;
+  }
 }
 
 function addEvent(text) {
@@ -133,14 +215,14 @@ function formatBroadcastLogLine(message) {
 }
 
 function resyncAnnotationsFromHistory(events) {
-  annotations.clear();
+  annotations?.clear();
   for (const ev of events || []) {
     const p = ev?.payload || {};
     if (p.event_type === "annotation") {
       const author = ev.user_id || p.user_id || "";
-      annotations.addFromPayload(p, author === state.userId ? state.userId : "");
+      annotations?.addFromPayload(p, author === state.userId ? state.userId : "");
     } else if (p.event_type === "annotation_removed") {
-      annotations.removeById(p.annotation_id);
+      annotations?.removeById(p.annotation_id);
     }
   }
 }
@@ -157,6 +239,21 @@ function openClearVoteModal() {
 function closeClearVoteModal() {
   els.clearVoteModal.classList.add("hidden");
   state.pendingClearProposal = null;
+}
+
+function openAnnotationDeleteModal() {
+  const req = state.pendingAnnotationDeleteRequest;
+  if (!req || !els.annotationDeleteSummary || !els.annotationDeleteModal) {
+    return;
+  }
+  const extra = req.message ? ` Note: ${req.message}` : "";
+  els.annotationDeleteSummary.textContent = `${req.requester_name} wants to delete your annotation. Expires at ${new Date(req.expires_ms).toLocaleString()}.${extra}`;
+  els.annotationDeleteModal.classList.remove("hidden");
+}
+
+function closeAnnotationDeleteModal() {
+  els.annotationDeleteModal?.classList.add("hidden");
+  state.pendingAnnotationDeleteRequest = null;
 }
 
 function resetSessionStats() {
@@ -255,6 +352,84 @@ function closeLeaveReportModal() {
   els.leaveReportModal?.classList.add("hidden");
 }
 
+function resetRoomView({ clearRoomIdentity = false } = {}) {
+  drawing = false;
+  currentStroke = null;
+  closeClearVoteModal();
+  closeAnnotationDeleteModal();
+  if (board) {
+    board.strokes = [];
+    board.clear();
+  }
+  annotations?.clear();
+  state.currentSequence = -1;
+  state.lastReceivedSequence = -1;
+  state.roomState = "idle";
+  state.activeUsers = [];
+  state.orderedBroadcasts = [];
+  state.optimisticStrokeIds.clear();
+  state.undoStack = [];
+  state.redoStack = [];
+  state.pendingUndoEntry = null;
+  state.pendingRedoEntry = null;
+  renderUsers([]);
+  if (els.eventLog) {
+    els.eventLog.innerHTML = "";
+  }
+  if (clearRoomIdentity) {
+    state.roomId = "";
+  }
+  updateRoomMeta();
+}
+
+function resetSessionOnJoinFailure(code) {
+  pendingReconnect = false;
+  disconnect(false);
+  state.sessionPhase = "idle";
+  state.joined = false;
+  refreshJoinedControls();
+  setStatus("Disconnected.", "");
+  if (code === "CONNECTION_ALREADY_EXISTS") {
+    setError("Connection ID 已被其他设备占用。每台设备请使用不同的 Connection ID（如 conn-ipad、conn-pc）。");
+    els.connectionId?.focus();
+    els.connectionId?.select();
+    return;
+  }
+  if (code === "USER_ALREADY_JOINED") {
+    setError(
+      "User ID 已被占用或该用户已在其他房间。每台设备请使用不同的 User ID（如 user-ipad、user-pc），Room ID 需完全一致。",
+    );
+    els.userId?.focus();
+    els.userId?.select();
+  }
+}
+
+function markJoinSucceeded() {
+  state.sessionPhase = "joined";
+  state.joined = true;
+  refreshJoinedControls();
+  setStatus(`Joined room ${state.roomId}`, "connected");
+  const names = (state.activeUsers || []).map((u) => u.user_name || u.user_id).join(", ");
+  setError(`已加入房间「${state.roomId}」，当前成员 ${state.activeUsers.length} 人：${names || "仅自己"}`);
+}
+
+function finalizeLeave() {
+  if (state.sessionPhase !== "leaving") {
+    return;
+  }
+  const report = pendingLeaveReport;
+  pendingLeaveReport = null;
+  disconnect(false);
+  state.sessionPhase = "idle";
+  state.joined = false;
+  resetRoomView({ clearRoomIdentity: true });
+  setStatus("Disconnected.", "");
+  refreshJoinedControls();
+  if (report && report.statsSnapshot.roomJoinedAt > 0) {
+    showLeaveReportModal(report.statsSnapshot, report.durationMs, report.roomLabel);
+  }
+}
+
 function updateBoardInteractionClass() {
   els.boardStack.classList.remove("mode-text", "mode-formula");
   if (state.activeTool === "text") {
@@ -289,7 +464,7 @@ function placeAnnotationAt(point) {
   try {
     send(
       buildAnnotation(state, {
-        annotation_id: crypto.randomUUID(),
+        annotation_id: uuid(),
         mode,
         content: String(raw).trim(),
         x: point.x,
@@ -319,7 +494,7 @@ function updateRoomMeta() {
 }
 
 function socketUrlForConnection() {
-  const base = els.serverUrl.value.replace(/\/ws\/?$/, "").replace(/\/$/, "");
+  const base = normalizeServerBaseUrl(els.serverUrl?.value || state.serverUrl || defaultServerUrl());
   return `${base}/ws/${encodeURIComponent(state.connectionId)}`;
 }
 
@@ -336,12 +511,35 @@ function connect() {
     return;
   }
   disconnect(false);
-  const url = socketUrlForConnection();
-  state.socket = new WebSocket(url);
+  const normalizedField = formatServerUrlField(els.serverUrl?.value || state.serverUrl || defaultServerUrl());
+  state.serverUrl = normalizedField;
+  if (els.serverUrl) {
+    els.serverUrl.value = normalizedField;
+  }
+  let url;
+  try {
+    url = socketUrlForConnection();
+  } catch (error) {
+    state.sessionPhase = "idle";
+    refreshJoinedControls();
+    setError(`Server URL 无效：${String(error.message || error)}`);
+    return;
+  }
+  let socket;
+  try {
+    socket = new WebSocket(url);
+  } catch (error) {
+    state.sessionPhase = "idle";
+    refreshJoinedControls();
+    setError(`无法创建 WebSocket（${url}）：${String(error.message || error)}`);
+    return;
+  }
+  state.socket = socket;
   state.socket.onopen = () => {
     state.connected = true;
-    setStatus(`Connected to ${url}`, "connected");
-    setError("Connected.");
+    setStatus("WebSocket 已连接，正在加入房间…", "");
+    setError("正在发送 Join 请求…");
+    refreshConnectionPill();
     send(buildJoin(state));
   };
   state.socket.onmessage = (event) => {
@@ -352,16 +550,27 @@ function connect() {
     }
   };
   state.socket.onerror = () => {
-    setError("Socket error.");
-    setStatus("Socket error", "error");
+    setError("无法连接服务器，请确认已运行 backend/run.bat 且 Server URL 正确。");
+    setStatus("连接失败", "error");
   };
   state.socket.onclose = () => {
-    const shouldReconnect = state.joined && pendingReconnect;
+    const wasLeaving = state.sessionPhase === "leaving";
+    const shouldReconnect = state.sessionPhase === "joined" && pendingReconnect;
     state.connected = false;
     state.socket = null;
+    if (wasLeaving) {
+      finalizeLeave();
+      return;
+    }
     setStatus("Disconnected.", "");
     if (shouldReconnect) {
       scheduleReconnect();
+      return;
+    }
+    if (state.sessionPhase === "connecting") {
+      state.sessionPhase = "idle";
+      state.joined = false;
+      refreshJoinedControls();
     }
   };
 }
@@ -371,15 +580,11 @@ function disconnect(manual = true) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
-  if (state.socket && state.socket.readyState === WebSocket.OPEN && manual && state.joined) {
-    try {
-      send(buildLeave(state, "manual"));
-    } catch {}
-  }
   state.socket?.close();
   state.socket = null;
   state.connected = false;
-  if (manual) {
+  if (manual && state.sessionPhase !== "leaving") {
+    state.sessionPhase = "idle";
     state.joined = false;
     pendingReconnect = false;
   }
@@ -461,9 +666,16 @@ function handleMessage(message) {
         : "";
     setError(`${code}: ${message.payload?.message || "unknown"}${hint}`);
     addEvent(`error ${code}`.trim());
+    if (code === "USER_ALREADY_JOINED" || code === "CONNECTION_ALREADY_EXISTS") {
+      if (state.sessionPhase === "connecting") {
+        resetSessionOnJoinFailure(code);
+        return;
+      }
+    }
     if (code === "ROOM_NOT_FOUND") {
       pendingReconnect = false;
       disconnect(false);
+      state.sessionPhase = "idle";
       state.joined = false;
       refreshJoinedControls();
       setStatus("房间不存在或已销毁。", "error");
@@ -503,12 +715,16 @@ function handleMessage(message) {
         state.pendingUndoEntry = null;
         state.pendingRedoEntry = null;
         state.lastReceivedSequence = roomState.current_sequence ?? state.lastReceivedSequence;
-        state.joined = true;
         state.activeUsers = roomState.active_users || [];
         renderUsers(state.activeUsers);
         const history = roomState.canvas_history ?? roomState.canvas_events ?? [];
-        board.syncFromEvents(history);
-        resyncAnnotationsFromHistory(history);
+        try {
+          board?.syncFromEvents(history);
+          resyncAnnotationsFromHistory(history);
+        } catch (syncError) {
+          setError(`已加入房间，但同步画布失败：${String(syncError.message || syncError)}`);
+        }
+        markJoinSucceeded();
       } else {
         state.sessionStats.stateSyncs += 1;
         state.activeUsers = roomState.active_users || state.activeUsers;
@@ -521,7 +737,7 @@ function handleMessage(message) {
         state.currentSequence = roomState.current_sequence ?? state.currentSequence;
       }
     } else if (message.payload?.status === "ok" && message.payload?.reason === "joined") {
-      state.joined = true;
+      markJoinSucceeded();
     } else if (message.payload?.status === "ok" && !message.payload?.room_state) {
       const op = message.payload?.op;
       const p = message.payload;
@@ -600,10 +816,29 @@ function applyBroadcast(message) {
   const payload = message.payload || {};
   const eventType = payload.event_type;
   if (eventType === "annotation") {
-    const author = message.user_id || payload.user_id || "";
-    annotations.addFromPayload(payload, author === state.userId ? state.userId : "");
+    annotations.addFromPayload(payload, state.userId);
   } else if (eventType === "annotation_removed") {
     annotations.removeById(payload.annotation_id);
+    if (state.pendingAnnotationDeleteRequest?.annotation_id === payload.annotation_id) {
+      closeAnnotationDeleteModal();
+    }
+  } else if (eventType === "annotation_delete_requested") {
+    if (payload.target_author_id === state.userId) {
+      state.pendingAnnotationDeleteRequest = {
+        request_id: payload.request_id,
+        annotation_id: payload.annotation_id,
+        requester_id: payload.requester_id,
+        requester_name: payload.requester_name || payload.requester_id,
+        target_author_id: payload.target_author_id,
+        expires_ms: payload.expires_ms,
+        message: payload.message || "",
+      };
+      openAnnotationDeleteModal();
+    }
+  } else if (eventType === "annotation_delete_rejected") {
+    if (state.pendingAnnotationDeleteRequest?.request_id === payload.request_id) {
+      closeAnnotationDeleteModal();
+    }
   } else if (eventType === "draw") {
     const strokeId = payload.stroke_id;
     if (strokeId && state.optimisticStrokeIds.has(strokeId)) {
@@ -664,46 +899,72 @@ function applyBroadcast(message) {
   addEvent(formatBroadcastLogLine(message));
 }
 
+function normalizeSessionPhase() {
+  if (!state.sessionPhase || !["idle", "connecting", "joined", "leaving"].includes(state.sessionPhase)) {
+    state.sessionPhase = state.joined ? "joined" : "idle";
+  }
+}
+
 function joinRoom() {
+  if (!uiReady) {
+    startApp();
+  }
+  normalizeSessionPhase();
+  if (state.sessionPhase !== "idle") {
+    setError(`当前状态为 ${state.sessionPhase}，请稍候或刷新页面后再 Join。`);
+    return;
+  }
+  closeLeaveReportModal();
   state.connectionId = els.connectionId.value.trim() || `conn-${Math.random().toString(16).slice(2, 8)}`;
   state.roomId = els.roomId.value.trim();
   state.userId = els.userId.value.trim();
   state.userName = els.userName.value.trim() || state.userId;
-  state.serverUrl = els.serverUrl.value.trim();
+  state.serverUrl = formatServerUrlField(els.serverUrl?.value || defaultServerUrl());
+  if (els.serverUrl) {
+    els.serverUrl.value = state.serverUrl;
+  }
   state.color = els.brushColor.value;
   state.brushSize = Number(els.brushSize.value);
   if (!state.roomId || !state.userId) {
     setError("Room ID and User ID are required.");
     return;
   }
+  if (!state.connectionId) {
+    state.connectionId = `conn-${Math.random().toString(16).slice(2, 8)}`;
+    if (els.connectionId) {
+      els.connectionId.value = state.connectionId;
+    }
+  }
+  warnIfUnreachableServerUrl();
+  resetRoomView();
+  state.sessionPhase = "connecting";
   pendingReconnect = true;
+  refreshJoinedControls();
+  setError(`正在连接 ${socketUrlForConnection()} ，房间「${state.roomId}」，用户「${state.userId}」…`);
   connect();
 }
 
 function leaveRoom() {
+  if (state.sessionPhase !== "joined") {
+    return;
+  }
   const roomLabel = state.roomId;
   const joinedAt = state.sessionStats.roomJoinedAt;
   const durationMs = joinedAt > 0 ? Date.now() - joinedAt : 0;
   const statsSnapshot = { ...state.sessionStats };
+  state.sessionPhase = "leaving";
   pendingReconnect = false;
-  closeClearVoteModal();
-  disconnect(true);
-  state.joined = false;
-  state.undoStack = [];
-  state.redoStack = [];
-  state.pendingUndoEntry = null;
-  state.pendingRedoEntry = null;
-  state.optimisticStrokeIds.clear();
-  annotations.clear();
-  state.roomState = "idle";
-  state.activeUsers = [];
-  renderUsers([]);
-  setStatus("Disconnected.", "");
-  updateRoomMeta();
+  pendingLeaveReport = { statsSnapshot, durationMs, roomLabel };
   refreshJoinedControls();
-  if (joinedAt > 0) {
-    showLeaveReportModal(statsSnapshot, durationMs, roomLabel);
+  if (state.socket && state.socket.readyState === WebSocket.OPEN) {
+    try {
+      send(buildLeave(state, "manual"));
+    } catch {
+      finalizeLeave();
+    }
+    return;
   }
+  finalizeLeave();
 }
 
 function syncRoom() {
@@ -716,7 +977,13 @@ function syncRoom() {
 
 function pointerPos(event) {
   const rect = els.board.getBoundingClientRect();
-  let p = typeof event.pressure === "number" ? event.pressure : 1;
+  const touch = event.touches?.[0] || event.changedTouches?.[0] || null;
+  const clientX = touch ? touch.clientX : event.clientX;
+  const clientY = touch ? touch.clientY : event.clientY;
+  let p = touch && typeof touch.force === "number" ? touch.force : event.pressure;
+  if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) {
+    return { x: 0, y: 0, pressure: 1 };
+  }
   if (!Number.isFinite(p) || p < 0) {
     p = 1;
   }
@@ -724,8 +991,8 @@ function pointerPos(event) {
     p = 1;
   }
   return {
-    x: event.clientX - rect.left,
-    y: event.clientY - rect.top,
+    x: clientX - rect.left,
+    y: clientY - rect.top,
     pressure: p,
   };
 }
@@ -735,6 +1002,9 @@ function beginStroke(event) {
     setError("Join a room before drawing.");
     return;
   }
+  if (event.touches && event.touches.length > 1) {
+    return;
+  }
   if (state.activeTool === "text" || state.activeTool === "formula") {
     placeAnnotationAt(pointerPos(event));
     return;
@@ -742,13 +1012,15 @@ function beginStroke(event) {
   drawing = true;
   const point = pointerPos(event);
   currentStroke = {
-    stroke_id: crypto.randomUUID(),
+    stroke_id: uuid(),
     tool: state.activeTool,
     color: state.color,
     width: state.brushSize,
     points: [point],
   };
-  els.board.setPointerCapture(event.pointerId);
+  if (typeof event.pointerId === "number") {
+    els.board.setPointerCapture?.(event.pointerId);
+  }
 }
 
 function moveStroke(event) {
@@ -774,12 +1046,39 @@ function endStroke(event) {
     state.optimisticStrokeIds.delete(finalStroke.stroke_id);
     setError(String(error.message || error));
   }
-  els.board.releasePointerCapture?.(event.pointerId);
+  if (typeof event.pointerId === "number") {
+    els.board.releasePointerCapture?.(event.pointerId);
+  }
 }
 
-function toggleJoinAvailability(isJoined) {
-  els.joinBtn.disabled = isJoined;
-  els.leaveBtn.disabled = !isJoined;
+function beginStrokeFromTouch(event) {
+  event.preventDefault();
+  beginStroke(event);
+}
+
+function moveStrokeFromTouch(event) {
+  event.preventDefault();
+  moveStroke(event);
+}
+
+function endStrokeFromTouch(event) {
+  event.preventDefault();
+  endStroke(event);
+}
+
+function toggleJoinAvailability(sessionPhase) {
+  const isJoined = sessionPhase === "joined";
+  const isBusy = sessionPhase === "connecting" || sessionPhase === "leaving";
+  if (els.joinBtn) {
+    els.joinBtn.disabled = sessionPhase !== "idle";
+    els.joinBtn.classList.toggle("btn-locked", sessionPhase !== "idle");
+    els.joinBtn.classList.toggle("btn-joined", isJoined);
+    els.joinBtn.textContent = isJoined ? "Joined" : isBusy ? "Joining…" : "Join";
+  }
+  if (els.leaveBtn) {
+    els.leaveBtn.disabled = sessionPhase !== "joined";
+    els.leaveBtn.classList.toggle("btn-locked", sessionPhase !== "joined");
+  }
   els.syncBtn.disabled = !isJoined;
   if (els.undoBtn) {
     els.undoBtn.disabled = !isJoined;
@@ -790,117 +1089,194 @@ function toggleJoinAvailability(isJoined) {
 }
 
 function refreshJoinedControls() {
-  toggleJoinAvailability(state.joined);
+  toggleJoinAvailability(state.sessionPhase);
 }
 
-els.joinBtn.addEventListener("click", joinRoom);
-els.leaveBtn.addEventListener("click", leaveRoom);
-els.syncBtn.addEventListener("click", syncRoom);
-els.brushSize.addEventListener("input", () => {
-  state.brushSize = Number(els.brushSize.value);
-});
-els.brushColor.addEventListener("input", () => {
-  state.color = els.brushColor.value;
-});
-document.querySelectorAll("[data-tool]").forEach((button) => {
-  button.addEventListener("click", () => {
-    document.querySelectorAll("[data-tool]").forEach((btn) => btn.classList.remove("active"));
-    button.classList.add("active");
-    state.activeTool = button.dataset.tool;
-    updateBoardInteractionClass();
+function bindUiEvents() {
+  els.joinBtn?.addEventListener("click", joinRoom);
+  els.leaveBtn?.addEventListener("click", leaveRoom);
+  els.syncBtn?.addEventListener("click", syncRoom);
+  els.brushSize?.addEventListener("input", () => {
+    state.brushSize = Number(els.brushSize.value);
   });
-});
-els.clearProposeBtn.addEventListener("click", () => proposeClearCanvas());
-els.undoBtn?.addEventListener("click", () => performUndo());
-els.redoBtn?.addEventListener("click", () => performRedo());
-els.leaveReportClose?.addEventListener("click", () => closeLeaveReportModal());
-els.leaveReportModal?.addEventListener("click", (e) => {
-  if (e.target === els.leaveReportModal) {
-    closeLeaveReportModal();
-  }
-});
-els.clearVoteApprove.addEventListener("click", () => {
-  const p = state.pendingClearProposal;
-  if (!p || !state.connected) {
-    return;
-  }
-  try {
-    send(buildClearVote(state, p.proposal_id, "approve"));
-  } catch (error) {
-    setError(String(error.message || error));
-  }
-  closeClearVoteModal();
-});
-els.clearVoteReject.addEventListener("click", () => {
-  const p = state.pendingClearProposal;
-  if (!p || !state.connected) {
-    return;
-  }
-  try {
-    send(buildClearVote(state, p.proposal_id, "reject"));
-  } catch (error) {
-    setError(String(error.message || error));
-  }
-  closeClearVoteModal();
-});
-window.addEventListener("resize", () => board.resize());
-els.board.addEventListener("pointerdown", beginStroke);
-els.board.addEventListener("pointermove", moveStroke);
-els.board.addEventListener("pointerup", endStroke);
-els.board.addEventListener("pointercancel", endStroke);
-els.annotationLayer.addEventListener("click", (event) => {
-  const target = event.target?.closest?.(".board-annotation--mine");
-  if (!target || !state.joined) {
-    return;
-  }
-  event.stopPropagation();
-  const id = target.dataset.annotationId;
-  if (!id) {
-    return;
-  }
-  if (!window.confirm("删除此标注？")) {
-    return;
-  }
-  try {
-    send(buildAnnotationDelete(state, id));
-  } catch (error) {
-    setError(String(error.message || error));
-  }
-});
-window.addEventListener("keydown", (event) => {
-  const t = event.target;
-  const tag = t?.tagName;
-  const inField = tag === "INPUT" || tag === "TEXTAREA" || t?.isContentEditable;
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
-    if (inField) {
+  els.brushColor?.addEventListener("input", () => {
+    state.color = els.brushColor.value;
+  });
+  document.querySelectorAll("[data-tool]").forEach((button) => {
+    button.addEventListener("click", () => {
+      document.querySelectorAll("[data-tool]").forEach((btn) => btn.classList.remove("active"));
+      button.classList.add("active");
+      state.activeTool = button.dataset.tool;
+      updateBoardInteractionClass();
+    });
+  });
+  els.clearProposeBtn?.addEventListener("click", () => proposeClearCanvas());
+  els.undoBtn?.addEventListener("click", () => performUndo());
+  els.redoBtn?.addEventListener("click", () => performRedo());
+  els.leaveReportClose?.addEventListener("click", () => closeLeaveReportModal());
+  els.leaveReportModal?.addEventListener("click", (e) => {
+    if (e.target === els.leaveReportModal) {
+      closeLeaveReportModal();
+    }
+  });
+  els.clearVoteApprove?.addEventListener("click", () => {
+    const p = state.pendingClearProposal;
+    if (!p || !state.connected) {
       return;
     }
-    event.preventDefault();
-    if (event.shiftKey) {
+    try {
+      send(buildClearVote(state, p.proposal_id, "approve"));
+    } catch (error) {
+      setError(String(error.message || error));
+    }
+    closeClearVoteModal();
+  });
+  els.clearVoteReject?.addEventListener("click", () => {
+    const p = state.pendingClearProposal;
+    if (!p || !state.connected) {
+      return;
+    }
+    try {
+      send(buildClearVote(state, p.proposal_id, "reject"));
+    } catch (error) {
+      setError(String(error.message || error));
+    }
+    closeClearVoteModal();
+  });
+  els.annotationDeleteApprove?.addEventListener("click", () => {
+    const req = state.pendingAnnotationDeleteRequest;
+    if (!req || !state.connected) {
+      return;
+    }
+    try {
+      send(buildAnnotationDeleteVote(state, req.request_id, req.annotation_id, "approve"));
+    } catch (error) {
+      setError(String(error.message || error));
+    }
+    closeAnnotationDeleteModal();
+  });
+  els.annotationDeleteReject?.addEventListener("click", () => {
+    const req = state.pendingAnnotationDeleteRequest;
+    if (!req || !state.connected) {
+      return;
+    }
+    try {
+      send(buildAnnotationDeleteVote(state, req.request_id, req.annotation_id, "reject"));
+    } catch (error) {
+      setError(String(error.message || error));
+    }
+    closeAnnotationDeleteModal();
+  });
+  els.annotationDeleteModal?.addEventListener("click", (e) => {
+    if (e.target === els.annotationDeleteModal) {
+      closeAnnotationDeleteModal();
+    }
+  });
+  window.addEventListener("resize", () => board?.resize());
+  els.board?.addEventListener("pointerdown", beginStroke);
+  els.board?.addEventListener("pointermove", moveStroke);
+  els.board?.addEventListener("pointerup", endStroke);
+  els.board?.addEventListener("pointercancel", endStroke);
+  if (!("PointerEvent" in window)) {
+    els.board?.addEventListener("touchstart", beginStrokeFromTouch, { passive: false });
+    els.board?.addEventListener("touchmove", moveStrokeFromTouch, { passive: false });
+    els.board?.addEventListener("touchend", endStrokeFromTouch, { passive: false });
+    els.board?.addEventListener("touchcancel", endStrokeFromTouch, { passive: false });
+  }
+  els.annotationLayer?.addEventListener("click", (event) => {
+    const target = event.target?.closest?.(".board-annotation--mine");
+    if (!target || !state.joined) {
+      return;
+    }
+    event.stopPropagation();
+    const id = target.dataset.annotationId;
+    if (!id) {
+      return;
+    }
+    if (!window.confirm("删除此标注？")) {
+      return;
+    }
+    try {
+      send(buildAnnotationDelete(state, id));
+    } catch (error) {
+      setError(String(error.message || error));
+    }
+  });
+  window.addEventListener("keydown", (event) => {
+    const t = event.target;
+    const tag = t?.tagName;
+    const inField = tag === "INPUT" || tag === "TEXTAREA" || t?.isContentEditable;
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
+      if (inField) {
+        return;
+      }
+      event.preventDefault();
+      if (event.shiftKey) {
+        performRedo();
+      } else {
+        performUndo();
+      }
+      return;
+    }
+    if ((event.ctrlKey && event.key.toLowerCase() === "y") || (event.metaKey && event.shiftKey && event.key.toLowerCase() === "z")) {
+      if (inField) {
+        return;
+      }
+      event.preventDefault();
       performRedo();
-    } else {
-      performUndo();
-    }
-    return;
-  }
-  if ((event.ctrlKey && event.key.toLowerCase() === "y") || (event.metaKey && event.shiftKey && event.key.toLowerCase() === "z")) {
-    if (inField) {
       return;
     }
-    event.preventDefault();
-    performRedo();
-    return;
-  }
-  if (event.key === "Escape") {
-    if (!els.clearVoteModal.classList.contains("hidden")) {
-      closeClearVoteModal();
-      return;
+    if (event.key === "Escape") {
+      if (!els.clearVoteModal?.classList.contains("hidden")) {
+        closeClearVoteModal();
+        return;
+      }
+      proposeClearCanvas();
     }
-    proposeClearCanvas();
-  }
-});
+  });
+}
 
-updateBoardInteractionClass();
-refreshJoinedControls();
-setStatus("Ready to connect.");
-updateRoomMeta();
+function startApp() {
+  if (uiReady) {
+    return;
+  }
+  queryDomElements();
+  if (!els.joinBtn || !els.board || !els.annotationLayer) {
+    setError("页面控件未加载完整，请刷新页面（Ctrl+F5）。");
+    setStatus("初始化失败", "error");
+    return;
+  }
+  try {
+    annotations = new AnnotationLayer(els.annotationLayer);
+    board = new CanvasBoard(els.board);
+    bindUiEvents();
+    if (els.serverUrl && !els.serverUrl.value.trim()) {
+      els.serverUrl.value = formatServerUrlField(defaultServerUrl());
+    } else if (els.serverUrl) {
+      els.serverUrl.value = formatServerUrlField(els.serverUrl.value);
+    }
+    normalizeSessionPhase();
+    updateBoardInteractionClass();
+    refreshJoinedControls();
+    setStatus("Ready to connect.");
+    if (location.protocol === "file:") {
+      setError("请启动后端并访问 http://127.0.0.1:8000/ ，不要直接打开 HTML 文件。");
+      setStatus("需要后端服务", "error");
+    } else {
+      setError("点击 Join 连接并加入房间。每台设备需不同的 Connection ID / User ID，Room ID 必须完全一致。");
+      warnIfUnreachableServerUrl();
+    }
+    updateRoomMeta();
+    uiReady = true;
+  } catch (error) {
+    console.error(error);
+    setError(`前端初始化失败：${String(error.message || error)}`);
+    setStatus("初始化失败", "error");
+  }
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", startApp);
+} else {
+  startApp();
+}

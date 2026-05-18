@@ -16,7 +16,7 @@ export function nowMs() {
 }
 
 export function buildClientMessage(type, state, payload) {
-  return {
+  const message = {
     msg_id: uuid(),
     type,
     timestamp: nowMs(),
@@ -25,6 +25,10 @@ export function buildClientMessage(type, state, payload) {
     sequence_id: null,
     payload,
   };
+  if (state.securityContext && typeof state.securityContext === "object") {
+    message.security = { ...state.securityContext };
+  }
+  return message;
 }
 
 export function buildJoin(state) {
@@ -56,6 +60,24 @@ export function buildAnnotation(state, payload) {
 export function buildAnnotationDelete(state, annotationId) {
   return buildClientMessage("annotation_delete", state, {
     annotation_id: annotationId,
+  });
+}
+
+export function buildAnnotationDeleteRequest(state, annotationId, message = "") {
+  const payload = {
+    annotation_id: annotationId,
+  };
+  if (message) {
+    payload.message = message;
+  }
+  return buildClientMessage("annotation_delete_request", state, payload);
+}
+
+export function buildAnnotationDeleteVote(state, requestId, annotationId, vote) {
+  return buildClientMessage("annotation_delete_vote", state, {
+    request_id: requestId,
+    annotation_id: annotationId,
+    vote,
   });
 }
 
