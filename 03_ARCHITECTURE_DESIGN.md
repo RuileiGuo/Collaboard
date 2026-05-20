@@ -808,5 +808,4 @@ Collaboard/
 
 ---
 
-**下一步**: 转到 `04_IMPLEMENTATION_PLAN.md` 查看详细的实现计划
 
